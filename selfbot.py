@@ -8,7 +8,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKe
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 from telegram.error import NetworkError
 
-TOKEN = "8743722675:AAGkZAdXX7ufh3kWTvcIrsikXdkVbhsrXXA"
+TOKEN = os.getenv("TOKEN")
 TEXTS_FILE = "saved_texts.json"
 POSTS_FILE = "my_posts.json"
 TOPICS_FILE = "topics.json"
