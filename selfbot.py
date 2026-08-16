@@ -591,12 +591,20 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             topic_name = topic_names[idx]
             base = ALL_TEXTS.get(ACTIVE_KEY, {})
 
-            # فقط متنِ داخل موضوع را به پست نهایی اضافه کن.
-            # اسم موضوع (مثلاً «کاسپلی آمریکایی») فقط برای انتخاب است
-            # و نباید دوباره داخل پست نمایش داده شود.
+            # وقتی موضوع انتخاب می‌شود:
+            # 1) متن موضوع، جای متن بالای پست قرار می‌گیرد.
+            # 2) اولین خط link_text که متن قدیمیِ موضوع/عنوان است حذف می‌شود.
+            # 3) بقیه متن لینک و فوتر دقیقاً حفظ می‌شوند.
+            #
+            # اگر link_text فقط یک خط داشته باشد، چیزی حذف نمی‌کنیم
+            # تا «Download pack» و امثال آن از بین نرود.
             header = TOPICS.get(topic_name, "")
             link_text = base.get("link_text", "download")
+            if "\n" in link_text:
+                link_text = link_text.split("\n", 1)[1].lstrip("\n")
             linked_word = base.get("linked_word", "")
+            if linked_word and linked_word not in link_text:
+                linked_word = ""
             footer = base.get("footer", "")
             bq = base.get("blockquote", False)
             if linked_word and linked_word in link_text:
