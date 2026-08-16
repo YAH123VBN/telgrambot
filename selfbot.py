@@ -590,7 +590,11 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
             topic_name = topic_names[idx]
             base = ALL_TEXTS.get(ACTIVE_KEY, {})
-            header = TOPICS[topic_name]
+
+            # فقط متنِ داخل موضوع را به پست نهایی اضافه کن.
+            # اسم موضوع (مثلاً «کاسپلی آمریکایی») فقط برای انتخاب است
+            # و نباید دوباره داخل پست نمایش داده شود.
+            header = TOPICS.get(topic_name, "")
             link_text = base.get("link_text", "download")
             linked_word = base.get("linked_word", "")
             footer = base.get("footer", "")
