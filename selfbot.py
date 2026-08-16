@@ -37,14 +37,7 @@ OWNER_ID = 8361990555
 _HTML_TAG_RE = re.compile(r'(<[^>]+>)')
 
 def preserve_spaces(text):
-    parts = _HTML_TAG_RE.split(text)
-    result = []
-    for part in parts:
-        if part and part.startswith("<"):
-            result.append(part)
-        else:
-            result.append(part.replace(" ", "&nbsp;"))
-    return "".join(result)
+    return text
 
 # ═══════════════════════════════════════════════════
 # Safe JSON loader - NEVER overwrites existing files
