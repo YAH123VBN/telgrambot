@@ -17,46 +17,43 @@ LINK_REGEX = re.compile(r'(https?://\S+|t\.me/\S+)', re.IGNORECASE)
 
 OWNER_ID = 8361990555
 
-# ── regex برای پیدا کردن تگ‌های HTML ──
 _HTML_TAG_RE = re.compile(r'(<[^>]+>)')
 
 def preserve_spaces(text):
-    """spaceهای معمولی رو توی متن (نه داخل تگ HTML) به &nbsp; تبدیل می‌کنه"""
     parts = _HTML_TAG_RE.split(text)
     result = []
     for part in parts:
-        if part and part.startswith('<'):
+        if part and part.startswith("<"):
             result.append(part)
         else:
-            result.append(part.replace(' ', '&nbsp;'))
-    return ''.join(parts)
+            result.append(part.replace(" ", "&nbsp;"))
+    return "".join(result)
 
-# ═══════════════════════════════════════════════════
-# سیستم ادمین‌ها
-# ═══════════════════════════════════════════════════
+# ==================================================
+# Admin System
+# ==================================================
 
 def load_json(path, default):
     if not os.path.exists(path):
-        with open(path, 'w', encoding='utf-8') as f:
+        with open(path, "w", encoding="utf-8") as f:
             json.dump(default, f, ensure_ascii=False, indent=2)
         return default
-    with open(path, 'r', encoding='utf-8') as f:
+    with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
 
 def save_json(path, data):
-    with open(path, 'w', encoding='utf-8') as f:
+    with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
-# ساختار پیش‌فرض ادمین: { "user_id_str": { "full_access": false, "permissions": [] } }
 ADMINS = load_json(ADMINS_FILE, {})
 
 ALL_PERMISSIONS = [
-    "ready",        # آماده‌سازی / ساخت پست
-    "list",         # لیست متن‌ها
-    "add_text",     # افزودن متن / قالب
-    "my_posts",     # پست‌های من
-    "manage_topics",# مدیریت موضوعات
-    "manage_admins" # مدیریت ادمین‌ها (فقط مالک می‌تونه بده)
+    "ready",
+    "list",
+    "add_text",
+    "my_posts",
+    "manage_topics",
+    "manage_admins"
 ]
 
 def is_owner(user_id: int) -> bool:
@@ -78,9 +75,9 @@ def can_use_bot(user_id: int) -> bool:
         return True
     return str(user_id) in ADMINS
 
-# ═══════════════════════════════════════════════════
-# کیبوردها
-# ═══════════════════════════════════════════════════
+# ==================================================
+# Keyboards
+# ==================================================
 
 def get_main_keyboard(user_id: int):
     buttons = [
@@ -106,7 +103,6 @@ ADMIN_MANAGE_KEYBOARD = ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 
-# ── دیکشنری سراسری برای قفل کاربران ──
 _USER_LOCKS = {}
 
 ALL_TEXTS = load_json(TEXTS_FILE, {
@@ -153,27 +149,19 @@ def get_posts(user_id):
     posts = load_json(POSTS_FILE, {})
     return posts.get(str(user_id), [])
 
-# ═══════════════════════════════════════════════════
+# ==================================================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     if not can_use_bot(uid):
         await update.message.reply_text("⛔ دسترسی نداری!")
         return
     await update.message.reply_text(
-        "👋 سلام!
-
-"
-        "🎯 آماده‌سازی → یه قالب انتخاب کن، بعد فقط لینک بده
-"
-        "📋 لیست متن‌ها → مدیریت قالب‌ها + متن‌های رندوم
-"
-        "➕ افزودن متن → ساخت قالب جدید
-"
-        "📁 پست‌های من → همه پست‌ها
-
-"
-        "💡 نکته: وقتی قالبی رو با 🎯 آماده‌سازی انتخاب کنی،
-"
+        "👋 سلام!\n\n"
+        "🎯 آماده‌سازی → یه قالب انتخاب کن، بعد فقط لینک بده\n"
+        "📋 لیست متن‌ها → مدیریت قالب‌ها + متن‌های رندوم\n"
+        "➕ افزودن متن → ساخت قالب جدید\n"
+        "📁 پست‌های من → همه پست‌ها\n\n"
+        "💡 نکته: وقتی قالبی رو با 🎯 آماده‌سازی انتخاب کنی،\n"
         "هر لینکی بدی همونجوری پست می‌سازه!",
         reply_markup=get_main_keyboard(uid)
     )
@@ -191,8 +179,7 @@ async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not m:
         await update.message.reply_text(
             "❌ /add نام | متن-پایین | کلمه-لینک\n\n"
-            "مثال:
-/add p2 DownLoad مشاهده 📥 | مشاهده",
+            "مثال:\n/add p2 DownLoad مشاهده 📥 | مشاهده",
             reply_markup=get_main_keyboard(uid)
         )
         return
@@ -256,7 +243,6 @@ async def list_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     del_row = [InlineKeyboardButton(f"🗑 {k}", callback_data=f"del:{k}") for k in sorted(ALL_TEXTS.keys())]
     for i in range(0, len(del_row), 3):
         buttons.append(del_row[i:i+3])
-
     text = "📋 انتخاب کن:"
     markup = InlineKeyboardMarkup(buttons)
     if update.message:
@@ -308,7 +294,7 @@ async def my_posts_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.send_message(
                 chat_id=update.effective_chat.id,
                 text=post["result"],
-                parse_mode='HTML',
+                parse_mode="HTML",
                 disable_web_page_preview=True
             )
             sent += 1
@@ -321,9 +307,9 @@ async def my_posts_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg += f"\n⚠️ {failed} پست ارسال نشد."
     await update.message.reply_text(msg, reply_markup=get_main_keyboard(uid))
 
-# ═══════════════════════════════════════════════════
-# دستورات مدیریت ادمین
-# ═══════════════════════════════════════════════════
+# ==================================================
+# Admin Management Commands
+# ==================================================
 
 async def admin_menu_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
@@ -331,18 +317,11 @@ async def admin_menu_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⛔ فقط مالک ربات می‌تونه ادمین‌ها رو مدیریت کنه!", reply_markup=get_main_keyboard(uid))
         return
     await update.message.reply_text(
-        "👮‍♂️ پنل مدیریت ادمین‌ها:
-
-"
-        "➕ افزودن ادمین → یه نفر رو ادمین کن
-"
-        "🗑 برکناری ادمین → ادمین رو حذف کن
-"
-        "⚙️ مدیریت دسترسی‌ها → دسترسی هر ادمین رو تنظیم کن
-"
-        "📋 لیست ادمین‌ها → ببین کی ادمینه
-
-"
+        "👮‍♂️ پنل مدیریت ادمین‌ها:\n\n"
+        "➕ افزودن ادمین → یه نفر رو ادمین کن\n"
+        "🗑 برکناری ادمین → ادمین رو حذف کن\n"
+        "⚙️ مدیریت دسترسی‌ها → دسترسی هر ادمین رو تنظیم کن\n"
+        "📋 لیست ادمین‌ها → ببین کی ادمینه\n\n"
         "💡 نکته: مالک (تو) همیشه به همه چی دسترسی داری!",
         reply_markup=ADMIN_MANAGE_KEYBOARD
     )
@@ -359,22 +338,18 @@ async def admin_list_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         fa = "✅ کامل" if data.get("full_access") else "❌ محدود"
         perms = ", ".join(data.get("permissions", [])) if not data.get("full_access") else "همه"
         lines.append(f"👤 {aid}\n   دسترسی: {fa}\n   بخش‌ها: {perms}")
-    await update.message.reply_text("📋 لیست ادمین‌ها:
+    await update.message.reply_text("📋 لیست ادمین‌ها:\n\n" + "\n\n".join(lines), reply_markup=ADMIN_MANAGE_KEYBOARD)
 
-" + "\n\n".join(lines), reply_markup=ADMIN_MANAGE_KEYBOARD)
-
-# ═══════════════════════════════════════════════════
+# ==================================================
 async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global ACTIVE_KEY
     q = update.callback_query
     await q.answer()
     data = q.data
     uid = update.effective_user.id
-
     if not can_use_bot(uid):
         await q.edit_message_text("⛔ دسترسی نداری!")
         return
-
     if data.startswith("use:"):
         if not has_permission(uid, "list"):
             await q.edit_message_text("⛔ اجازه نداری!")
@@ -400,7 +375,6 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 [InlineKeyboardButton("🔙 بازگشت", callback_data="back_list")]
             ]
             await q.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(buttons))
-
     elif data.startswith("bq:"):
         if not has_permission(uid, "list"):
             await q.edit_message_text("⛔ اجازه نداری!")
@@ -432,7 +406,6 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 [InlineKeyboardButton("🔙 بازگشت", callback_data="back_list")]
             ]
             await q.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(buttons))
-
     elif data.startswith("ready:"):
         if not has_permission(uid, "ready"):
             await q.edit_message_text("⛔ اجازه نداری!")
@@ -465,7 +438,6 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 text="⬇️ لینک رو بده یا بنویس تمام:",
                 reply_markup=MULTI_POST_KEYBOARD
             )
-
     elif data.startswith("del:"):
         if not has_permission(uid, "list"):
             await q.edit_message_text("⛔ اجازه نداری!")
@@ -477,10 +449,8 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if ACTIVE_KEY == k and ALL_TEXTS:
                 ACTIVE_KEY = list(ALL_TEXTS.keys())[0]
             await q.edit_message_text(f"🗑 {k} حذف شد!")
-
     elif data == "back_list":
         await list_cmd(update, context)
-
     elif data.startswith("rhadd:"):
         if not has_permission(uid, "list"):
             await q.edit_message_text("⛔ اجازه نداری!")
@@ -490,10 +460,9 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["state"] = "waiting_random_header"
         await q.edit_message_text(
             f"🎲 متن رندوم جدید برای {k}:\n\n"
-            f"متنی که می‌خوای بالای پست بیاد (تصادفی) رو بفرست:\n\n"
-            f"(برای لغو بنویس: لغو)"
+            "متنی که می‌خوای بالای پست بیاد (تصادفی) رو بفرست:\n\n"
+            "(برای لغو بنویس: لغو)"
         )
-
     elif data.startswith("rhlist:"):
         if not has_permission(uid, "list"):
             await q.edit_message_text("⛔ اجازه نداری!")
@@ -512,7 +481,6 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🎲 متن‌های رندوم {k}:\n\n" + "\n".join(lines),
             reply_markup=InlineKeyboardMarkup(buttons)
         )
-
     elif data.startswith("rhdel:"):
         if not has_permission(uid, "list"):
             await q.edit_message_text("⛔ اجازه نداری!")
@@ -528,40 +496,32 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.edit_message_text(f"🗑 حذف شد:\n{removed}")
         else:
             await q.answer("❌ خطا!")
-
-    # ── انتخاب موضوع ──
     elif data.startswith("ts:"):
         if not has_permission(uid, "ready"):
             await q.edit_message_text("⛔ اجازه نداری!")
             return
-
         if _USER_LOCKS.get(uid):
             await q.answer("⏳ قبلاً پردازش شد!")
             return
         _USER_LOCKS[uid] = True
-
         try:
             await q.edit_message_text("⏳ در حال ساخت پست...", reply_markup=None)
-
             url = context.user_data.pop("pending_url", "")
             if not url:
                 await q.edit_message_text("❌ خطا! لینک منقضی شده.")
                 return
-
             idx = int(data[3:])
             topic_names = sorted(TOPICS.keys())
             if idx < 0 or idx >= len(topic_names):
                 await q.edit_message_text("❌ خطا! موضوع پیدا نشد.")
                 return
             topic_name = topic_names[idx]
-
             base = ALL_TEXTS.get(ACTIVE_KEY, {})
             header = TOPICS[topic_name]
             link_text = base.get("link_text", "download")
             linked_word = base.get("linked_word", "")
             footer = base.get("footer", "")
             bq = base.get("blockquote", False)
-
             if linked_word and linked_word in link_text:
                 parts = link_text.split(linked_word, 1)
                 link_anchor = f'<a href="{url}">{escape(linked_word)}</a>'
@@ -572,21 +532,17 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 link_part = f'<a href="{url}">{escape(link_text)}</a>'
                 if bq:
                     link_part = f"<blockquote>{link_part}</blockquote>"
-
             parts_list = []
             if header:
                 parts_list.append(f"<b>{escape(header)}</b>")
             parts_list.append(link_part)
             if footer:
                 parts_list.append(escape(footer))
-
             result = "\n".join(parts_list)
             result = preserve_spaces(result)
-
             add_post(update.effective_user.id, header, link_text, linked_word, url, result)
-
             try:
-                await q.edit_message_text(result, parse_mode='HTML', disable_web_page_preview=True)
+                await q.edit_message_text(result, parse_mode="HTML", disable_web_page_preview=True)
                 await context.bot.send_message(
                     chat_id=update.effective_chat.id,
                     text="✅ پست ساخته شد!\n\n📝 لینک بعدی رو بده یا بنویس تمام:",
@@ -602,8 +558,6 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.edit_message_text(f"❌ خطا: {str(e)}")
         finally:
             _USER_LOCKS[uid] = False
-
-    # ── افزودن موضوع جدید ──
     elif data == "topic_add":
         if not has_permission(uid, "manage_topics"):
             await q.edit_message_text("⛔ اجازه مدیریت موضوعات رو نداری!")
@@ -615,8 +569,6 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "(مثلاً: وطنی چهره دار، کاسپلی)\n\n"
             "برای لغو بنویس: لغو"
         )
-
-    # ── منوی حذف موضوع ──
     elif data == "topic_del_menu":
         if not has_permission(uid, "manage_topics"):
             await q.edit_message_text("⛔ اجازه مدیریت موضوعات رو نداری!")
@@ -630,8 +582,6 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             buttons.append([InlineKeyboardButton(f"🗑 {name}", callback_data=f"td:{i}")])
         buttons.append([InlineKeyboardButton("🔙 بازگشت", callback_data="topic_back")])
         await q.edit_message_text("🗑 کدوم موضوع رو می‌خوای حذف کنی؟", reply_markup=InlineKeyboardMarkup(buttons))
-
-    # ── حذف موضوع ──
     elif data.startswith("td:"):
         if not has_permission(uid, "manage_topics"):
             await q.edit_message_text("⛔ اجازه نداری!")
@@ -645,8 +595,6 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         del TOPICS[name]
         save_texts()
         await q.edit_message_text(f"🗑 موضوع {name} حذف شد!")
-
-    # ── برگشت به لیست موضوعات ──
     elif data == "topic_back":
         url = context.user_data.get("pending_url", "")
         if not url:
@@ -662,11 +610,9 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ])
         await q.edit_message_text(
             f"🔗 لینک دریافت شد!\n\n"
-            f"🎬 حالا موضوع رو انتخاب کن:",
+            "🎬 حالا موضوع رو انتخاب کن:",
             reply_markup=InlineKeyboardMarkup(buttons)
         )
-
-    # ── مدیریت دسترسی ادمین (inline) ──
     elif data.startswith("adm_perm:"):
         if not is_owner(uid):
             await q.edit_message_text("⛔ فقط مالک!")
@@ -685,9 +631,7 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ADMINS[target_id]["permissions"] = sorted(list(perms))
         save_admins()
         await q.answer("✅ تغییر کرد!")
-        # rebuild inline
         await rebuild_admin_perms_inline(q, target_id)
-
     elif data.startswith("adm_full:"):
         if not is_owner(uid):
             await q.edit_message_text("⛔ فقط مالک!")
@@ -700,7 +644,6 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_admins()
         await q.answer("✅ تغییر کرد!")
         await rebuild_admin_perms_inline(q, target_id)
-
     elif data == "admin_back":
         if not is_owner(uid):
             return
@@ -728,38 +671,30 @@ async def rebuild_admin_perms_inline(q, target_id):
     buttons.append([InlineKeyboardButton("🔙 بازگشت", callback_data="admin_back")])
     await q.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(buttons))
 
-# ═══════════════════════════════════════════════════
+# ==================================================
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global ACTIVE_KEY
     text = update.message.text or ""
     state = context.user_data.get("state")
     uid = update.effective_user.id
-
     if not can_use_bot(uid):
         await update.message.reply_text("⛔ دسترسی نداری!")
         return
-
-    # خروج از چندپستی
     if text in ["تمام", "✅ تمام"] and context.user_data.get("ready_mode"):
         context.user_data.pop("ready_mode", None)
         context.user_data.pop("pending_url", None)
         await update.message.reply_text("✅ آماده‌سازی تمام شد.", reply_markup=get_main_keyboard(uid))
         return
-
     if text in ["لغو", "❌ لغو"]:
         context.user_data.clear()
         await update.message.reply_text("❌ لغو شد.", reply_markup=get_main_keyboard(uid))
         return
-
-    # ── منوی مدیریت ادمین (دکمه‌های کیبورد) ──
     if text == "👮‍♂️ مدیریت ادمین‌ها":
         await admin_menu_cmd(update, context)
         return
-
     if text == "📋 لیست ادمین‌ها":
         await admin_list_cmd(update, context)
         return
-
     if text == "➕ افزودن ادمین":
         if not is_owner(uid):
             await update.message.reply_text("⛔ فقط مالک!", reply_markup=get_main_keyboard(uid))
@@ -773,7 +708,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=ADMIN_MANAGE_KEYBOARD
         )
         return
-
     if text == "🗑 برکناری ادمین":
         if not is_owner(uid):
             await update.message.reply_text("⛔ فقط مالک!", reply_markup=get_main_keyboard(uid))
@@ -785,11 +719,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines = "\n".join([f"• {aid}" for aid in ADMINS.keys()])
         await update.message.reply_text(
             f"🗑 آیدی عددی ادمینی که می‌خوای برکنار کنی رو بفرست:\n\n{lines}\n\n"
-            f"برای لغو بنویس: لغو",
+            "برای لغو بنویس: لغو",
             reply_markup=ADMIN_MANAGE_KEYBOARD
         )
         return
-
     if text == "⚙️ مدیریت دسترسی‌ها":
         if not is_owner(uid):
             await update.message.reply_text("⛔ فقط مالک!", reply_markup=get_main_keyboard(uid))
@@ -806,12 +739,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(buttons)
         )
         return
-
     if text == "🔙 بازگشت به منوی اصلی":
         await update.message.reply_text("🔙 برگشتیم!", reply_markup=get_main_keyboard(uid))
         return
-
-    # ── state: افزودن ادمین ──
     if state == "waiting_new_admin_id":
         if not text.isdigit():
             await update.message.reply_text("❌ آیدی باید فقط عدد باشه! دوباره بفرست:\n(برای لغو: لغو)", reply_markup=ADMIN_MANAGE_KEYBOARD)
@@ -830,12 +760,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.pop("state", None)
         await update.message.reply_text(
             f"✅ ادمین {new_id} اضافه شد!\n\n"
-            f"حالا از ⚙️ مدیریت دسترسی‌ها می‌تونی دسترسی‌هاش رو تنظیم کنی.",
+            "حالا از ⚙️ مدیریت دسترسی‌ها می‌تونی دسترسی‌هاش رو تنظیم کنی.",
             reply_markup=ADMIN_MANAGE_KEYBOARD
         )
         return
-
-    # ── state: برکناری ادمین ──
     if state == "waiting_remove_admin_id":
         if not text.isdigit():
             await update.message.reply_text("❌ آیدی باید عدد باشه! دوباره:\n(برای لغو: لغو)", reply_markup=ADMIN_MANAGE_KEYBOARD)
@@ -850,10 +778,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.pop("state", None)
         await update.message.reply_text(f"🗑 ادمین {rem_id} برکنار شد!", reply_markup=ADMIN_MANAGE_KEYBOARD)
         return
-
-    # ── state: مدیریت دسترسی ادمین (انتخاب از اینلاین) ──
-    # این بخش توی callback هندل شده (adm_perm, adm_full)
-
     if state == "waiting_random_header":
         if not has_permission(uid, "list"):
             await update.message.reply_text("⛔ اجازه نداری!", reply_markup=get_main_keyboard(uid))
@@ -876,7 +800,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         context.user_data.clear()
         return
-
     if state == "waiting_topic_name":
         if not has_permission(uid, "manage_topics"):
             await update.message.reply_text("⛔ اجازه نداری!", reply_markup=get_main_keyboard(uid))
@@ -886,12 +809,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["state"] = "waiting_topic_text"
         await update.message.reply_text(
             f"✅ اسم موضوع: {text}\n\n"
-            f"حالا متن کامل موضوع رو بفرست:\n"
-            f"(این متن بالای پست میاد)\n\n"
-            f"برای لغو بنویس: لغو"
+            "حالا متن کامل موضوع رو بفرست:\n"
+            "(این متن بالای پست میاد)\n\n"
+            "برای لغو بنویس: لغو"
         )
         return
-
     if state == "waiting_topic_text":
         if not has_permission(uid, "manage_topics"):
             await update.message.reply_text("⛔ اجازه نداری!", reply_markup=get_main_keyboard(uid))
@@ -909,7 +831,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(
                 f"✅ موضوع {name} {'جایگزین شد' if existed else 'اضافه شد'}!\n\n"
                 f"📝 {text}\n\n"
-                f"لینک رو بده یا بنویس تمام:",
+                "لینک رو بده یا بنویس تمام:",
                 reply_markup=MULTI_POST_KEYBOARD
             )
             context.user_data.pop("state", None)
@@ -918,12 +840,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(
                 f"✅ موضوع {name} {'جایگزین شد' if existed else 'اضافه شد'}!\n\n"
                 f"📝 {text}\n\n"
-                f"حالا از 🎯 آماده‌سازی می‌تونی استفاده کنی.",
+                "حالا از 🎯 آماده‌سازی می‌تونی استفاده کنی.",
                 reply_markup=get_main_keyboard(uid)
             )
             context.user_data.clear()
         return
-
     if state == "waiting_link_text":
         if not has_permission(uid, "add_text"):
             await update.message.reply_text("⛔ اجازه نداری!", reply_markup=get_main_keyboard(uid))
@@ -933,11 +854,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["state"] = "waiting_linked_word"
         await update.message.reply_text(
             f"✅ متن پایین دریافت شد.\n\n"
-            f"حالا بگو کدوم کلمه لینک بشه:\n\n{text}\n\n"
-            f"(برای لغو بنویس: لغو)"
+            "حالا بگو کدوم کلمه لینک بشه:\n\n"
+            f"{text}\n\n"
+            "(برای لغو بنویس: لغو)"
         )
         return
-
     if state == "waiting_linked_word":
         if not has_permission(uid, "add_text"):
             await update.message.reply_text("⛔ اجازه نداری!", reply_markup=get_main_keyboard(uid))
@@ -948,19 +869,18 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(
                 f"❌ کلمه {text} توی متن پیدا نشد!\n\n"
                 f"متن: {link_text}\n\n"
-                f"دوباره بگو:\n(برای لغو بنویس: لغو)"
+                "دوباره بگو:\n(برای لغو بنویس: لغو)"
             )
             return
         context.user_data["temp_linked_word"] = text
         context.user_data["state"] = "waiting_name"
         await update.message.reply_text(
             f"✅ کلمه لینک‌شده: {text}\n\n"
-            f"حالا یه اسم برای این قالب بذار:\n"
-            f"(مثلاً: p2, پک-جدید)\n\n"
-            f"(برای لغو بنویس: لغو)"
+            "حالا یه اسم برای این قالب بذار:\n"
+            "(مثلاً: p2, پک-جدید)\n\n"
+            "(برای لغو بنویس: لغو)"
         )
         return
-
     if state == "waiting_name":
         if not has_permission(uid, "add_text"):
             await update.message.reply_text("⛔ اجازه نداری!", reply_markup=get_main_keyboard(uid))
@@ -969,7 +889,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if text in ALL_TEXTS:
             await update.message.reply_text(
                 f"❌ اسم {text} قبلاً هست! یه اسم دیگه:\n"
-                f"(برای لغو بنویس: لغو)"
+                "(برای لغو بنویس: لغو)"
             )
             return
         link_text = context.user_data.get("temp_link_text", "")
@@ -986,14 +906,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             f"✅ قالب {text} ساخته شد!\n\n"
             f"🔗 {link_text}\n\n"
-            f"🎲 حالا از 📋 لیست متن‌ها → {text} → ➕ افزودن متن رندوم\n"
-            f"متن‌های بالای پست رو اضافه کن.",
+            "🎲 حالا از 📋 لیست متن‌ها → {text} → ➕ افزودن متن رندوم\n"
+            "متن‌های بالای پست رو اضافه کن.",
             reply_markup=get_main_keyboard(uid)
         )
         context.user_data.clear()
         return
-
-    # ── دکمه‌های منوی اصلی ──
     if text == "🎯 آماده‌سازی":
         await ready_cmd(update, context)
         return
@@ -1008,8 +926,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "📝 ساخت قالب جدید:\n\n"
             "متن پایین رو بفرست:\n\n"
-            "مثال:
-DownLoad مشـ.ـاهده 📥\n\n"
+            "مثال:\nDownLoad مشـ.ـاهده 📥\n\n"
             "برای لغو بنویس: لغو"
         )
         return
@@ -1019,7 +936,6 @@ DownLoad مشـ.ـاهده 📥\n\n"
     if text == "❓ راهنما":
         await start(update, context)
         return
-
     matches = LINK_REGEX.findall(text)
     if not matches:
         if context.user_data.get("ready_mode"):
@@ -1031,8 +947,6 @@ DownLoad مشـ.ـاهده 📥\n\n"
         await update.message.reply_text("❓ لینک ندیدم!", reply_markup=get_main_keyboard(uid))
         return
     url = matches[0]
-
-    # ── آماده‌سازی فعال → لیست موضوعات ──
     if context.user_data.get("ready_mode"):
         if not has_permission(uid, "ready"):
             await update.message.reply_text("⛔ اجازه ساخت پست رو نداری!", reply_markup=get_main_keyboard(uid))
@@ -1048,12 +962,10 @@ DownLoad مشـ.ـاهده 📥\n\n"
         ])
         await update.message.reply_text(
             f"🔗 لینک دریافت شد!\n\n"
-            f"🎬 حالا موضوع رو انتخاب کن:",
+            "🎬 حالا موضوع رو انتخاب کن:",
             reply_markup=InlineKeyboardMarkup(buttons)
         )
         return
-
-    # ── حالت عادی → مستقیم بساز ──
     template = ALL_TEXTS.get(ACTIVE_KEY)
     if not template:
         await update.message.reply_text(
@@ -1062,18 +974,15 @@ DownLoad مشـ.ـاهده 📥\n\n"
             reply_markup=get_main_keyboard(uid)
         )
         return
-
     link_text = template.get("link_text", "download")
     linked_word = template.get("linked_word", "")
     footer = template.get("footer", "")
     rh = template.get("random_headers", [])
     bq = template.get("blockquote", False)
-
     if rh:
         header = random.choice(rh)
     else:
         header = ""
-
     if linked_word and linked_word in link_text:
         parts = link_text.split(linked_word, 1)
         link_anchor = f'<a href="{url}">{escape(linked_word)}</a>'
@@ -1084,28 +993,24 @@ DownLoad مشـ.ـاهده 📥\n\n"
         link_part = f'<a href="{url}">{escape(link_text)}</a>'
         if bq:
             link_part = f"<blockquote>{link_part}</blockquote>"
-
     parts_list = []
     if header:
         parts_list.append(f"<b>{escape(header)}</b>")
     parts_list.append(link_part)
     if footer:
         parts_list.append(escape(footer))
-
     result = "\n".join(parts_list)
     result = preserve_spaces(result)
-
     add_post(update.effective_user.id, header, link_text, linked_word, url, result)
-
     try:
-        await update.message.reply_text(result, parse_mode='HTML', disable_web_page_preview=True)
+        await update.message.reply_text(result, parse_mode="HTML", disable_web_page_preview=True)
     except NetworkError:
         await update.message.reply_text(
             "⚠️ پست ساخته شد ولی به خاطر مشکل اینترنت نتونستم بفرستم.",
             reply_markup=get_main_keyboard(uid)
         )
 
-# ═══════════════════════════════════════════════════
+# ==================================================
 def main():
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
