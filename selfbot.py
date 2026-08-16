@@ -30,7 +30,7 @@ def preserve_spaces(text):
     return "".join(result)
 
 # ==================================================
-# Admin System
+# Safe JSON loader - NEVER overwrites existing files
 # ==================================================
 
 def load_json(path, default):
@@ -38,8 +38,16 @@ def load_json(path, default):
         with open(path, "w", encoding="utf-8") as f:
             json.dump(default, f, ensure_ascii=False, indent=2)
         return default
-    with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        # If file is empty or null, return default but DON'T overwrite
+        if data is None:
+            return default
+        return data
+    except (json.JSONDecodeError, Exception):
+        # If file is corrupted, return default but DON'T overwrite
+        return default
 
 def save_json(path, data):
     with open(path, "w", encoding="utf-8") as f:
@@ -48,12 +56,12 @@ def save_json(path, data):
 ADMINS = load_json(ADMINS_FILE, {})
 
 ALL_PERMISSIONS = [
-    "ready",
-    "list",
-    "add_text",
-    "my_posts",
-    "manage_topics",
-    "manage_admins"
+    ("ready", "🎯 آماده‌سازی / ساخت پست"),
+    ("list", "📋 لیست متن‌ها / قالب‌ها"),
+    ("add_text", "➕ افزودن متن / قالب جدید"),
+    ("my_posts", "📁 پست‌های من"),
+    ("manage_topics", "🎬 مدیریت موضوعات"),
+    ("manage_admins", "👮‍♂️ مدیریت ادمین‌ها")
 ]
 
 def is_owner(user_id: int) -> bool:
@@ -350,6 +358,19 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not can_use_bot(uid):
         await q.edit_message_text("⛔ دسترسی نداری!")
         return
+
+    # ── adm_edit: (FIXED - this was missing!) ──
+    if data.startswith("adm_edit:"):
+        if not is_owner(uid):
+            await q.edit_message_text("⛔ فقط مالک!")
+            return
+        target_id = data[9:]
+        if target_id not in ADMINS:
+            await q.edit_message_text("❌ این ادمین پیدا نشد!")
+            return
+        await rebuild_admin_perms_inline(q, target_id)
+        return
+
     if data.startswith("use:"):
         if not has_permission(uid, "list"):
             await q.edit_message_text("⛔ اجازه نداری!")
@@ -659,10 +680,10 @@ async def rebuild_admin_perms_inline(q, target_id):
     buttons = []
     if not fa:
         row = []
-        for p in ALL_PERMISSIONS:
+        for p, label in ALL_PERMISSIONS:
             mark = "✅" if p in perms else "❌"
-            row.append(InlineKeyboardButton(f"{mark} {p}", callback_data=f"adm_perm:{target_id}:{p}"))
-            if len(row) == 2:
+            row.append(InlineKeyboardButton(f"{mark} {label}", callback_data=f"adm_perm:{target_id}:{p}"))
+            if len(row) == 1:
                 buttons.append(row)
                 row = []
         if row:
