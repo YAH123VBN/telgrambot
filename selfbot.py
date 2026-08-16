@@ -29,7 +29,7 @@ def data_path(filename):
     """Return the persistent data-file path."""
     return os.path.join(DATA_DIR, filename)
 
-TOKEN = os.getenv("TOKEN")
+TOKEN = os.environ.get("BOT_TOKEN", "").strip()
 TEXTS_FILE = data_path("saved_texts.json")
 POSTS_FILE = data_path("my_posts.json")
 TOPICS_FILE = data_path("topics.json")
@@ -210,6 +210,15 @@ def get_link_mapping(url):
     url = normalize_link(url)
     with _LINK_REGISTRY_LOCK:
         return LINK_REGISTRY.get(url)
+
+
+def resolve_topic_for_link(url):
+    """Return the topic registered by the second bot for this exact URL."""
+    mapped = get_link_mapping(url)
+    if not mapped:
+        return None
+    topic = (mapped.get("topic_name") or mapped.get("topic_key") or "").strip()
+    return topic or None
 
 
 def choose_topic_header(topic_name):
@@ -698,12 +707,36 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if rh_count > 0:
                 msg += f"🎲 {rh_count} متن رندوم\n"
 
-            msg += "\n🎯 پست رو با موضوع می‌خوای یا بدون موضوع؟"
+            msg += (
+                "\n\n🤖 حالت خودکار فعاله."
+                "\nلینک رو بفرست؛ اگر لینک در ربات دوم ثبت شده باشه، "
+                "موضوع خودش پیدا می‌شه و متن مناسب همان موضوع ساخته می‌شه."
+            )
             buttons = [
-                [InlineKeyboardButton("🎬 با موضوع", callback_data="postmode:topic")],
+                [InlineKeyboardButton("🤖 استفاده خودکار از موضوع لینک", callback_data="postmode:auto")],
+                [InlineKeyboardButton("🎬 انتخاب موضوع دستی", callback_data="postmode:topic")],
                 [InlineKeyboardButton("🚫 بدون موضوع", callback_data="postmode:no_topic")]
             ]
             await q.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(buttons))
+
+    elif data == "postmode:auto":
+        if not has_permission(uid, "ready"):
+            await q.edit_message_text("⛔ اجازه نداری!")
+            return
+        if not context.user_data.get("ready_mode"):
+            await q.edit_message_text("❌ اول از 🎯 آماده‌سازی یک قالب انتخاب کن.")
+            return
+        context.user_data["post_mode"] = "auto"
+        context.user_data.pop("selected_topic", None)
+        await q.edit_message_text(
+            "🤖 حالت خودکار فعال شد.\n\n"
+            "⬇️ حالا لینک رو بده یا بنویس تمام:"
+        )
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text="🔗 لینک رو بفرست؛ موضوع از ثبت ربات دوم خوانده می‌شه.",
+            reply_markup=MULTI_POST_KEYBOARD
+        )
 
     elif data == "postmode:topic":
         if not has_permission(uid, "ready"):
@@ -944,6 +977,39 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.edit_message_text(f"❌ خطا: {str(e)}")
         finally:
             _USER_LOCKS[uid] = False
+    elif data.startswith("fallback_topic:"):
+        if not has_permission(uid, "ready"):
+            await q.edit_message_text("⛔ اجازه نداری!")
+            return
+        try:
+            idx = int(data.split(":", 1)[1])
+        except (TypeError, ValueError):
+            await q.edit_message_text("❌ موضوع نامعتبره.")
+            return
+        topic_names = sorted(TOPICS.keys())
+        if idx < 0 or idx >= len(topic_names):
+            await q.edit_message_text("❌ موضوع پیدا نشد.")
+            return
+        topic_name = topic_names[idx]
+        context.user_data["post_mode"] = "topic"
+        context.user_data["selected_topic"] = topic_name
+        url = context.user_data.pop("fallback_url", "")
+        if not url:
+            await q.edit_message_text("❌ لینک پیدا نشد؛ دوباره لینک را بفرست.")
+            return
+        try:
+            header, link_text, linked_word, result = build_post_result(url, ACTIVE_KEY, topic_name=topic_name)
+            add_post(uid, header, link_text, linked_word, url, result)
+            await q.edit_message_text(result, parse_mode="HTML", disable_web_page_preview=True)
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text="✅ پست ساخته شد!\n\n📝 لینک بعدی رو بده یا بنویس تمام:",
+                reply_markup=MULTI_POST_KEYBOARD
+            )
+        except Exception as e:
+            await q.edit_message_text(f"❌ خطا: {str(e)}")
+        return
+
     elif data == "topic_add":
         if not has_permission(uid, "manage_topics"):
             await q.edit_message_text("⛔ اجازه مدیریت موضوعات رو نداری!")
@@ -1361,11 +1427,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         post_mode = context.user_data.get("post_mode")
-        if post_mode not in {"topic", "no_topic"}:
+        if post_mode not in {"auto", "topic", "no_topic"}:
             await update.message.reply_text(
-                "🎯 اول مشخص کن پست با موضوع باشه یا بدون موضوع.",
+                "🤖 اول حالت خودکار رو فعال کن یا موضوع دستی انتخاب کن.",
                 reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🎬 با موضوع", callback_data="postmode:topic")],
+                    [InlineKeyboardButton("🤖 موضوع خودکار از لینک", callback_data="postmode:auto")],
+                    [InlineKeyboardButton("🎬 موضوع دستی", callback_data="postmode:topic")],
                     [InlineKeyboardButton("🚫 بدون موضوع", callback_data="postmode:no_topic")]
                 ])
             )
@@ -1376,12 +1443,26 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("🎬 اول یک موضوع انتخاب کن.")
             return
 
-        # In no-topic mode, automatically recover the topic previously registered
-        # by the separate classifier bot. No extra marker is required in the URL.
-        if post_mode == "no_topic":
-            mapped = get_link_mapping(url)
-            if mapped and mapped.get("topic_name"):
-                topic_name = mapped.get("topic_name")
+        if post_mode in {"auto", "no_topic"}:
+            topic_name = resolve_topic_for_link(url)
+
+        # اگر لینک توسط ربات دوم ثبت نشده باشد، در حالت خودکار به کاربر اجازه می‌دهیم
+        # موضوع را دستی انتخاب کند؛ بنابراین لینک گم نمی‌شود و ساخت پست متوقف نمی‌ماند.
+        if post_mode == "auto" and not topic_name:
+            topic_names = sorted(TOPICS.keys())
+            if not topic_names:
+                await update.message.reply_text(
+                    "❌ برای این لینک موضوعی از ربات دوم پیدا نشد و موضوع دستی هم وجود ندارد.",
+                    reply_markup=MULTI_POST_KEYBOARD
+                )
+                return
+            context.user_data["fallback_url"] = url
+            buttons = [[InlineKeyboardButton(name, callback_data=f"fallback_topic:{idx}")] for idx, name in enumerate(topic_names)]
+            await update.message.reply_text(
+                "⚠️ این لینک در Bridge ثبت نشده.\n\n🎬 موضوع را دستی انتخاب کن:",
+                reply_markup=InlineKeyboardMarkup(buttons)
+            )
+            return
 
         if _USER_LOCKS.get(uid):
             await update.message.reply_text("⏳ قبلاً در حال پردازش یک لینک هستی.")
@@ -1473,6 +1554,8 @@ async def post_init(app):
 
 
 def main():
+    if not TOKEN:
+        raise RuntimeError("❌ BOT_TOKEN در Railway تنظیم نشده است.")
     print(f"📁 Data folder: {DATA_DIR}")
     print(f"📄 Texts file: {TEXTS_FILE} ({os.path.getsize(TEXTS_FILE) if os.path.exists(TEXTS_FILE) else 'new'})")
     print(f"📄 Topics file: {TOPICS_FILE} ({os.path.getsize(TOPICS_FILE) if os.path.exists(TOPICS_FILE) else 'new'})")
