@@ -11,11 +11,12 @@ from telegram.error import NetworkError
 # ═══════════════════════════════════════════════════
 # CRITICAL FIX: All files save NEXT to this .py file
 # ═══════════════════════════════════════════════════
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR = os.environ.get("RAILWAY_VOLUME_MOUNT_PATH", "/data")
+
+os.makedirs(DATA_DIR, exist_ok=True)
 
 def data_path(filename):
-    """Always returns path next to the script, not wherever python was run from"""
-    return os.path.join(SCRIPT_DIR, filename)
+    return os.path.join(DATA_DIR, filename)
 
 TOKEN = os.getenv("TOKEN")
 TEXTS_FILE = data_path("saved_texts.json")
