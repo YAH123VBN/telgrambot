@@ -4,6 +4,10 @@ import re
 import asyncio
 import random
 import zipfile
+import threading
+import secrets
+from urllib.parse import urlparse, parse_qs
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from datetime import datetime
 from html import escape
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
@@ -25,14 +29,36 @@ def data_path(filename):
     """Return the persistent data-file path."""
     return os.path.join(DATA_DIR, filename)
 
-TOKEN = TOKEN = os.getenv("TOKEN")
+TOKEN = os.getenv("TOKEN")
 TEXTS_FILE = data_path("saved_texts.json")
 POSTS_FILE = data_path("my_posts.json")
 TOPICS_FILE = data_path("topics.json")
+LINK_REGISTRY_FILE = data_path("link_registry.json")
+TOPIC_VARIANTS_FILE = data_path("topic_variants.json")
+LINK_BRIDGE_KEY_FILE = data_path("link_bridge_key.txt")
 ADMINS_FILE = data_path("admins.json")
 LINK_REGEX = re.compile(r'(https?://\S+|t\.me/\S+)', re.IGNORECASE)
 
 OWNER_ID = 8361990555
+
+# Link-bridge API settings. The second bot will use this API to register
+# which topic belongs to each generated link. Set LINK_BRIDGE_KEY on Railway
+# for a fixed shared secret; otherwise one is generated and persisted locally.
+LINK_BRIDGE_HOST = os.environ.get("LINK_BRIDGE_HOST", "0.0.0.0")
+LINK_BRIDGE_PORT = int(os.environ.get("PORT", os.environ.get("LINK_BRIDGE_PORT", "8080")))
+LINK_BRIDGE_KEY = os.environ.get("LINK_BRIDGE_KEY", "").strip()
+if not LINK_BRIDGE_KEY:
+    if os.path.exists(LINK_BRIDGE_KEY_FILE):
+        try:
+            LINK_BRIDGE_KEY = open(LINK_BRIDGE_KEY_FILE, "r", encoding="utf-8").read().strip()
+        except Exception:
+            LINK_BRIDGE_KEY = ""
+    if not LINK_BRIDGE_KEY:
+        LINK_BRIDGE_KEY = secrets.token_urlsafe(32)
+        with open(LINK_BRIDGE_KEY_FILE, "w", encoding="utf-8") as _f:
+            _f.write(LINK_BRIDGE_KEY)
+
+_LINK_REGISTRY_LOCK = threading.Lock()
 
 _HTML_TAG_RE = re.compile(r'(<[^>]+>)')
 
@@ -142,11 +168,131 @@ TOPICS = load_json(TOPICS_FILE, {
     "کاسپلی آمریکایی": "🇺🇸 10 عدد فیلم (کاسپلی)"
 })
 
+LINK_REGISTRY = load_json(LINK_REGISTRY_FILE, {})
+TOPIC_VARIANTS = load_json(TOPIC_VARIANTS_FILE, {})
+
 ACTIVE_KEY = "p1"
 
 def save_texts():
     save_json(TEXTS_FILE, ALL_TEXTS)
     save_json(TOPICS_FILE, TOPICS)
+
+
+def normalize_link(url):
+    """Normalize a Telegram/generated link so the bridge lookup is stable."""
+    url = (url or "").strip()
+    url = url.rstrip(".,!?؛،")
+    if url.startswith("t.me/"):
+        url = "https://" + url
+    return url
+
+
+def register_link_mapping(url, topic_name=None, topic_key=None, label=None, source="bridge"):
+    """Persist a link -> topic mapping sent by the second bot."""
+    url = normalize_link(url)
+    if not url:
+        raise ValueError("لینک خالی است")
+    record = {
+        "url": url,
+        "topic_name": topic_name or "",
+        "topic_key": topic_key or "",
+        "label": label or "",
+        "source": source,
+        "updated_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    with _LINK_REGISTRY_LOCK:
+        LINK_REGISTRY[url] = record
+        save_json(LINK_REGISTRY_FILE, LINK_REGISTRY)
+    return record
+
+
+def get_link_mapping(url):
+    url = normalize_link(url)
+    with _LINK_REGISTRY_LOCK:
+        return LINK_REGISTRY.get(url)
+
+
+def choose_topic_header(topic_name):
+    """Choose a non-repeating variant for a topic when variants exist."""
+    variants = TOPIC_VARIANTS.get(topic_name, [])
+    if not isinstance(variants, list):
+        variants = []
+    variants = [str(x).strip() for x in variants if str(x).strip()]
+    if not variants:
+        return TOPICS.get(topic_name, "")
+    state = TOPIC_VARIANTS.setdefault("__state__", {})
+    history = state.setdefault(topic_name, [])
+    available = [v for v in variants if v not in history[-10:]] or variants[:]
+    selected = random.choice(available)
+    history.append(selected)
+    state[topic_name] = history[-50:]
+    save_json(TOPIC_VARIANTS_FILE, TOPIC_VARIANTS)
+    return selected
+
+
+class LinkBridgeHandler(BaseHTTPRequestHandler):
+    """Small stdlib HTTP API used by the separate link-classifier bot."""
+    def _send(self, code, payload):
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _authorized(self):
+        return self.headers.get("X-Link-Bridge-Key", "") == LINK_BRIDGE_KEY
+
+    def do_GET(self):
+        parsed = urlparse(self.path)
+        if parsed.path == "/health":
+            self._send(200, {"ok": True, "service": "main-bot-link-bridge"})
+            return
+        if parsed.path == "/link-info":
+            if not self._authorized():
+                self._send(401, {"ok": False, "error": "unauthorized"})
+                return
+            url = parse_qs(parsed.query).get("url", [""])[0]
+            record = get_link_mapping(url)
+            if record is None:
+                self._send(404, {"ok": False, "found": False})
+            else:
+                self._send(200, {"ok": True, "found": True, "record": record})
+            return
+        self._send(404, {"ok": False, "error": "not_found"})
+
+    def do_POST(self):
+        if self.path != "/register-link":
+            self._send(404, {"ok": False, "error": "not_found"})
+            return
+        if not self._authorized():
+            self._send(401, {"ok": False, "error": "unauthorized"})
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            data = json.loads(self.rfile.read(length).decode("utf-8"))
+            record = register_link_mapping(
+                data.get("url", ""),
+                topic_name=data.get("topic_name"),
+                topic_key=data.get("topic_key"),
+                label=data.get("label"),
+                source=data.get("source", "bridge"),
+            )
+            self._send(200, {"ok": True, "record": record})
+        except Exception as e:
+            self._send(400, {"ok": False, "error": str(e)})
+
+    def log_message(self, fmt, *args):
+        print(f"[LINK BRIDGE] {self.address_string()} - {fmt % args}")
+
+
+def start_link_bridge_server():
+    server = ThreadingHTTPServer((LINK_BRIDGE_HOST, LINK_BRIDGE_PORT), LinkBridgeHandler)
+    thread = threading.Thread(target=server.serve_forever, name="link-bridge", daemon=True)
+    thread.start()
+    print(f"🔗 Link bridge API listening on {LINK_BRIDGE_HOST}:{LINK_BRIDGE_PORT}")
+    print(f"🔐 Link bridge key file: {LINK_BRIDGE_KEY_FILE}")
+    return server
 
 def save_admins():
     save_json(ADMINS_FILE, ADMINS)
@@ -182,7 +328,7 @@ def build_post_result(url, template_key, topic_name=None):
     bq = base.get("blockquote", False)
 
     if topic_name is not None:
-        header = TOPICS.get(topic_name, "")
+        header = choose_topic_header(topic_name)
         if "\n" in link_text:
             link_text = link_text.split("\n", 1)[1].lstrip("\n")
     else:
@@ -237,7 +383,7 @@ async def backup_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⛔ فقط مالک ربات می‌تونه بکاپ بگیره!")
         return
 
-    files = [ADMINS_FILE, TEXTS_FILE, TOPICS_FILE, POSTS_FILE]
+    files = [ADMINS_FILE, TEXTS_FILE, TOPICS_FILE, POSTS_FILE, LINK_REGISTRY_FILE, TOPIC_VARIANTS_FILE, LINK_BRIDGE_KEY_FILE]
     existing_files = [path for path in files if os.path.isfile(path)]
 
     if not existing_files:
@@ -753,7 +899,7 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             #
             # اگر link_text فقط یک خط داشته باشد، چیزی حذف نمی‌کنیم
             # تا «Download pack» و امثال آن از بین نرود.
-            header = TOPICS.get(topic_name, "")
+            header = choose_topic_header(topic_name)
             link_text = base.get("link_text", "download")
             if "\n" in link_text:
                 link_text = link_text.split("\n", 1)[1].lstrip("\n")
@@ -1230,6 +1376,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("🎬 اول یک موضوع انتخاب کن.")
             return
 
+        # In no-topic mode, automatically recover the topic previously registered
+        # by the separate classifier bot. No extra marker is required in the URL.
+        if post_mode == "no_topic":
+            mapped = get_link_mapping(url)
+            if mapped and mapped.get("topic_name"):
+                topic_name = mapped.get("topic_name")
+
         if _USER_LOCKS.get(uid):
             await update.message.reply_text("⏳ قبلاً در حال پردازش یک لینک هستی.")
             return
@@ -1325,6 +1478,9 @@ def main():
     print(f"📄 Topics file: {TOPICS_FILE} ({os.path.getsize(TOPICS_FILE) if os.path.exists(TOPICS_FILE) else 'new'})")
     print(f"📄 Admins file: {ADMINS_FILE} ({os.path.getsize(ADMINS_FILE) if os.path.exists(ADMINS_FILE) else 'new'})")
     print(f"📄 Posts file: {POSTS_FILE} ({os.path.getsize(POSTS_FILE) if os.path.exists(POSTS_FILE) else 'new'})")
+    print(f"📄 Link registry: {LINK_REGISTRY_FILE} ({os.path.getsize(LINK_REGISTRY_FILE) if os.path.exists(LINK_REGISTRY_FILE) else 'new'})")
+    print(f"🔑 Link bridge key: {LINK_BRIDGE_KEY}")
+    start_link_bridge_server()
     app = Application.builder().token(TOKEN).post_init(post_init).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("backup", backup_cmd))
