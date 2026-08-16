@@ -8,11 +8,20 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKe
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 from telegram.error import NetworkError
 
+# ═══════════════════════════════════════════════════
+# CRITICAL FIX: All files save NEXT to this .py file
+# ═══════════════════════════════════════════════════
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+def data_path(filename):
+    """Always returns path next to the script, not wherever python was run from"""
+    return os.path.join(SCRIPT_DIR, filename)
+
 TOKEN = os.getenv("TOKEN")
-TEXTS_FILE = "saved_texts.json"
-POSTS_FILE = "my_posts.json"
-TOPICS_FILE = "topics.json"
-ADMINS_FILE = "admins.json"
+TEXTS_FILE = data_path("saved_texts.json")
+POSTS_FILE = data_path("my_posts.json")
+TOPICS_FILE = data_path("topics.json")
+ADMINS_FILE = data_path("admins.json")
 LINK_REGEX = re.compile(r'(https?://\S+|t\.me/\S+)', re.IGNORECASE)
 
 OWNER_ID = 8361990555
@@ -29,29 +38,32 @@ def preserve_spaces(text):
             result.append(part.replace(" ", "&nbsp;"))
     return "".join(result)
 
-# ==================================================
+# ═══════════════════════════════════════════════════
 # Safe JSON loader - NEVER overwrites existing files
-# ==================================================
+# ═══════════════════════════════════════════════════
 
 def load_json(path, default):
     if not os.path.exists(path):
+        print(f"[INFO] Creating new file: {path}")
         with open(path, "w", encoding="utf-8") as f:
             json.dump(default, f, ensure_ascii=False, indent=2)
         return default
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
-        # If file is empty or null, return default but DON'T overwrite
         if data is None:
             return default
+        file_size = os.path.getsize(path)
+        print(f"[INFO] Loaded {file_size} bytes from: {os.path.basename(path)}")
         return data
-    except (json.JSONDecodeError, Exception):
-        # If file is corrupted, return default but DON'T overwrite
+    except (json.JSONDecodeError, Exception) as e:
+        print(f"[WARNING] Could not load {path}: {e}")
         return default
 
 def save_json(path, data):
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+    print(f"[SAVE] {os.path.basename(path)} saved ({os.path.getsize(path)} bytes)")
 
 ADMINS = load_json(ADMINS_FILE, {})
 
@@ -83,9 +95,9 @@ def can_use_bot(user_id: int) -> bool:
         return True
     return str(user_id) in ADMINS
 
-# ==================================================
+# ═══════════════════════════════════════════════════
 # Keyboards
-# ==================================================
+# ═══════════════════════════════════════════════════
 
 def get_main_keyboard(user_id: int):
     buttons = [
@@ -157,7 +169,7 @@ def get_posts(user_id):
     posts = load_json(POSTS_FILE, {})
     return posts.get(str(user_id), [])
 
-# ==================================================
+# ═══════════════════════════════════════════════════
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     if not can_use_bot(uid):
@@ -315,9 +327,9 @@ async def my_posts_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg += f"\n⚠️ {failed} پست ارسال نشد."
     await update.message.reply_text(msg, reply_markup=get_main_keyboard(uid))
 
-# ==================================================
+# ═══════════════════════════════════════════════════
 # Admin Management Commands
-# ==================================================
+# ═══════════════════════════════════════════════════
 
 async def admin_menu_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
@@ -348,7 +360,7 @@ async def admin_list_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines.append(f"👤 {aid}\n   دسترسی: {fa}\n   بخش‌ها: {perms}")
     await update.message.reply_text("📋 لیست ادمین‌ها:\n\n" + "\n\n".join(lines), reply_markup=ADMIN_MANAGE_KEYBOARD)
 
-# ==================================================
+# ═══════════════════════════════════════════════════
 async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global ACTIVE_KEY
     q = update.callback_query
@@ -359,7 +371,6 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text("⛔ دسترسی نداری!")
         return
 
-    # ── adm_edit: (FIXED - this was missing!) ──
     if data.startswith("adm_edit:"):
         if not is_owner(uid):
             await q.edit_message_text("⛔ فقط مالک!")
@@ -692,7 +703,7 @@ async def rebuild_admin_perms_inline(q, target_id):
     buttons.append([InlineKeyboardButton("🔙 بازگشت", callback_data="admin_back")])
     await q.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(buttons))
 
-# ==================================================
+# ═══════════════════════════════════════════════════
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global ACTIVE_KEY
     text = update.message.text or ""
@@ -1031,8 +1042,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=get_main_keyboard(uid)
         )
 
-# ==================================================
+# ═══════════════════════════════════════════════════
 def main():
+    print(f"📁 Data folder: {SCRIPT_DIR}")
+    print(f"📄 Texts file: {TEXTS_FILE} ({os.path.getsize(TEXTS_FILE) if os.path.exists(TEXTS_FILE) else 'new'})")
+    print(f"📄 Topics file: {TOPICS_FILE} ({os.path.getsize(TOPICS_FILE) if os.path.exists(TOPICS_FILE) else 'new'})")
+    print(f"📄 Admins file: {ADMINS_FILE} ({os.path.getsize(ADMINS_FILE) if os.path.exists(ADMINS_FILE) else 'new'})")
+    print(f"📄 Posts file: {POSTS_FILE} ({os.path.getsize(POSTS_FILE) if os.path.exists(POSTS_FILE) else 'new'})")
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("add", add_cmd))
