@@ -25,7 +25,7 @@ def data_path(filename):
     """Return the persistent data-file path."""
     return os.path.join(DATA_DIR, filename)
 
-TOKEN = "8743722675:AAGkZAdXX7ufh3kWTvcIrsikXdkVbhsrXXA"
+TOKEN = os.getenv("TOKEN")
 TEXTS_FILE = data_path("saved_texts.json")
 POSTS_FILE = data_path("my_posts.json")
 TOPICS_FILE = data_path("topics.json")
