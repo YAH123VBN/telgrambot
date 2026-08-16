@@ -104,7 +104,6 @@ def get_main_keyboard(user_id: int):
     buttons = [
         ["🎯 آماده‌سازی", "📋 لیست متن‌ها"],
         ["➕ افزودن متن", "📁 پست‌های من"],
-        ["❓ راهنما"]
     ]
     if is_owner(user_id):
         buttons.append(["👮‍♂️ مدیریت ادمین‌ها"])
@@ -648,18 +647,26 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.edit_message_text("⛔ اجازه مدیریت موضوعات رو نداری!")
             return
         context.user_data["state"] = "waiting_topic_name"
+        context.user_data.pop("topic_name", None)
         await q.edit_message_text(
             "➕ افزودن موضوع جدید:\n\n"
             "یه اسم برای موضوع بذار:\n"
             "(مثلاً: وطنی چهره دار، کاسپلی)\n\n"
             "برای لغو بنویس: لغو"
         )
+        return
     elif data == "topic_del_menu":
         if not has_permission(uid, "manage_topics"):
             await q.edit_message_text("⛔ اجازه مدیریت موضوعات رو نداری!")
             return
         if not TOPICS:
-            await q.edit_message_text("📭 هیچ موضوعی نیست!")
+            await q.edit_message_text(
+                "📭 هیچ موضوعی نیست!",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("➕ افزودن موضوع", callback_data="topic_add")],
+                    [InlineKeyboardButton("🔙 بازگشت", callback_data="topic_back")]
+                ])
+            )
             return
         topic_names = sorted(TOPICS.keys())
         buttons = []
@@ -671,20 +678,30 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not has_permission(uid, "manage_topics"):
             await q.edit_message_text("⛔ اجازه نداری!")
             return
-        idx = int(data[3:])
+        try:
+            idx = int(data[3:])
+        except (TypeError, ValueError):
+            await q.answer("❌ خطا!")
+            return
         topic_names = sorted(TOPICS.keys())
         if idx < 0 or idx >= len(topic_names):
-            await q.answer("❌ خطا!")
+            await q.answer("❌ این موضوع دیگر وجود ندارد!")
             return
         name = topic_names[idx]
         del TOPICS[name]
         save_texts()
-        await q.edit_message_text(f"🗑 موضوع {name} حذف شد!")
+        topic_names = sorted(TOPICS.keys())
+        buttons = [[InlineKeyboardButton(topic, callback_data=f"ts:{i}")] for i, topic in enumerate(topic_names)]
+        buttons.append([
+            InlineKeyboardButton("➕ افزودن موضوع", callback_data="topic_add"),
+            InlineKeyboardButton("🗑 حذف موضوع", callback_data="topic_del_menu")
+        ])
+        await q.edit_message_text(
+            f"🗑 موضوع «{name}» حذف شد!\n\n🎬 حالا موضوع رو انتخاب کن:",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
     elif data == "topic_back":
         url = context.user_data.get("pending_url", "")
-        if not url:
-            await q.edit_message_text("❌ خطا!")
-            return
         topic_names = sorted(TOPICS.keys())
         buttons = []
         for idx, name in enumerate(topic_names):
@@ -913,14 +930,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         TOPICS[name] = text
         save_texts()
         if context.user_data.get("ready_mode"):
+            context.user_data.pop("state", None)
+            context.user_data.pop("topic_name", None)
             await update.message.reply_text(
                 f"✅ موضوع {name} {'جایگزین شد' if existed else 'اضافه شد'}!\n\n"
                 f"📝 {text}\n\n"
                 "لینک رو بده یا بنویس تمام:",
                 reply_markup=MULTI_POST_KEYBOARD
             )
-            context.user_data.pop("state", None)
-            context.user_data.pop("topic_name", None)
         else:
             await update.message.reply_text(
                 f"✅ موضوع {name} {'جایگزین شد' if existed else 'اضافه شد'}!\n\n"
@@ -991,7 +1008,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             f"✅ قالب {text} ساخته شد!\n\n"
             f"🔗 {link_text}\n\n"
-            "🎲 حالا از 📋 لیست متن‌ها → {text} → ➕ افزودن متن رندوم\n"
+            "🎲 حالا از 📋 لیست متن‌ها → قالب «{text}» → ➕ افزودن متن رندوم\n"
             "متن‌های بالای پست رو اضافه کن.",
             reply_markup=get_main_keyboard(uid)
         )
@@ -1017,9 +1034,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if text == "📁 پست‌های من":
         await my_posts_cmd(update, context)
-        return
-    if text == "❓ راهنما":
-        await start(update, context)
         return
     matches = LINK_REGEX.findall(text)
     if not matches:
