@@ -35,6 +35,7 @@ POSTS_FILE = data_path("my_posts.json")
 TOPICS_FILE = data_path("topics.json")
 LINK_REGISTRY_FILE = data_path("link_registry.json")
 TOPIC_VARIANTS_FILE = data_path("topic_variants.json")
+TEMPLATE_GROUPS_FILE = data_path("template_groups.json")
 LINK_BRIDGE_KEY_FILE = data_path("link_bridge_key.txt")
 ADMINS_FILE = data_path("admins.json")
 LINK_REGEX = re.compile(r'(https?://\S+|t\.me/\S+)', re.IGNORECASE)
@@ -100,6 +101,7 @@ ALL_PERMISSIONS = [
     ("add_text", "➕ افزودن متن / قالب جدید"),
     ("my_posts", "📁 پست‌های من"),
     ("manage_topics", "🎬 مدیریت موضوعات"),
+    ("manage_templates", "🧩 مدیریت قالب‌ها"),
     ("manage_admins", "👮‍♂️ مدیریت ادمین‌ها")
 ]
 
@@ -129,7 +131,8 @@ def can_use_bot(user_id: int) -> bool:
 def get_main_keyboard(user_id: int):
     buttons = [
         ["🎯 آماده‌سازی", "📋 لیست متن‌ها"],
-        ["➕ افزودن متن", "📁 پست‌های من"],
+        ["➕ افزودن متن", "🧩 مدیریت قالب‌ها"],
+        ["📁 پست‌های من"],
     ]
     if is_owner(user_id):
         buttons.append(["👮‍♂️ مدیریت ادمین‌ها"])
@@ -170,12 +173,51 @@ TOPICS = load_json(TOPICS_FILE, {
 
 LINK_REGISTRY = load_json(LINK_REGISTRY_FILE, {})
 TOPIC_VARIANTS = load_json(TOPIC_VARIANTS_FILE, {})
+# Maps "category|subcategory" -> template keys.
+TEMPLATE_GROUPS = load_json(TEMPLATE_GROUPS_FILE, {})
 
 ACTIVE_KEY = "p1"
 
 def save_texts():
     save_json(TEXTS_FILE, ALL_TEXTS)
     save_json(TOPICS_FILE, TOPICS)
+
+
+def save_template_groups():
+    save_json(TEMPLATE_GROUPS_FILE, TEMPLATE_GROUPS)
+
+
+def group_key(category, subcategory):
+    return f"{str(category).strip()}|{str(subcategory).strip()}"
+
+
+def get_group_templates(category, subcategory):
+    key = group_key(category, subcategory)
+    keys = TEMPLATE_GROUPS.get(key, [])
+    return [k for k in keys if k in ALL_TEXTS]
+
+
+def choose_template_for_link(mapping):
+    """Choose a template matching bridge category/subcategory, avoiding recent reuse."""
+    if not mapping:
+        return ACTIVE_KEY
+    category = mapping.get("category") or mapping.get("topic_name") or ""
+    subcategory = mapping.get("subcategory") or ""
+    candidates = get_group_templates(category, subcategory) if category and subcategory else []
+    if not candidates and category:
+        # Backward compatibility: topic_name alone may already be a TOPICS key.
+        candidates = [k for k, v in TEMPLATE_GROUPS.items() if k.startswith(str(category).strip() + "|") for k in v if k in ALL_TEXTS]
+    if not candidates:
+        return ACTIVE_KEY
+    state = TOPIC_VARIANTS.setdefault("__template_state__", {})
+    hist_key = group_key(category, subcategory)
+    history = state.setdefault(hist_key, [])
+    available = [k for k in candidates if k not in history[-10:]] or candidates[:]
+    selected = random.choice(available)
+    history.append(selected)
+    state[hist_key] = history[-50:]
+    save_json(TOPIC_VARIANTS_FILE, TOPIC_VARIANTS)
+    return selected
 
 
 def normalize_link(url):
@@ -187,7 +229,7 @@ def normalize_link(url):
     return url
 
 
-def register_link_mapping(url, topic_name=None, topic_key=None, label=None, source="bridge"):
+def register_link_mapping(url, topic_name=None, topic_key=None, category=None, subcategory=None, label=None, source="bridge"):
     """Persist a link -> topic mapping sent by the second bot."""
     url = normalize_link(url)
     if not url:
@@ -196,6 +238,8 @@ def register_link_mapping(url, topic_name=None, topic_key=None, label=None, sour
         "url": url,
         "topic_name": topic_name or "",
         "topic_key": topic_key or "",
+        "category": category or topic_name or "",
+        "subcategory": subcategory or "",
         "label": label or "",
         "source": source,
         "updated_at": datetime.now().isoformat(timespec="seconds"),
@@ -210,15 +254,6 @@ def get_link_mapping(url):
     url = normalize_link(url)
     with _LINK_REGISTRY_LOCK:
         return LINK_REGISTRY.get(url)
-
-
-def resolve_topic_for_link(url):
-    """Return the topic registered by the second bot for this exact URL."""
-    mapped = get_link_mapping(url)
-    if not mapped:
-        return None
-    topic = (mapped.get("topic_name") or mapped.get("topic_key") or "").strip()
-    return topic or None
 
 
 def choose_topic_header(topic_name):
@@ -284,6 +319,8 @@ class LinkBridgeHandler(BaseHTTPRequestHandler):
                 data.get("url", ""),
                 topic_name=data.get("topic_name"),
                 topic_key=data.get("topic_key"),
+                category=data.get("category"),
+                subcategory=data.get("subcategory"),
                 label=data.get("label"),
                 source=data.get("source", "bridge"),
             )
@@ -392,7 +429,7 @@ async def backup_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⛔ فقط مالک ربات می‌تونه بکاپ بگیره!")
         return
 
-    files = [ADMINS_FILE, TEXTS_FILE, TOPICS_FILE, POSTS_FILE, LINK_REGISTRY_FILE, TOPIC_VARIANTS_FILE, LINK_BRIDGE_KEY_FILE]
+    files = [ADMINS_FILE, TEXTS_FILE, TOPICS_FILE, POSTS_FILE, LINK_REGISTRY_FILE, TOPIC_VARIANTS_FILE, TEMPLATE_GROUPS_FILE, LINK_BRIDGE_KEY_FILE]
     existing_files = [path for path in files if os.path.isfile(path)]
 
     if not existing_files:
@@ -424,6 +461,54 @@ async def backup_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             print(f"[BACKUP CLEANUP ERROR] {e}")
 
+
+
+async def template_manager_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    if not can_use_bot(uid):
+        await update.message.reply_text("⛔ دسترسی نداری!")
+        return
+    if not has_permission(uid, "manage_templates"):
+        await update.message.reply_text("⛔ اجازه مدیریت قالب‌ها رو نداری!", reply_markup=get_main_keyboard(uid))
+        return
+
+    groups = []
+    for g, keys in sorted(TEMPLATE_GROUPS.items()):
+        valid = [k for k in keys if k in ALL_TEXTS]
+        if valid:
+            category, subcategory = g.split("|", 1)
+            groups.append(f"• {category} → {subcategory}: {len(valid)} قالب")
+
+    text = "🧩 مدیریت قالب‌ها\n\n"
+    text += "➕ افزودن قالب → یک قالب جدید بساز و دسته‌بندی کن.\n"
+    text += "📋 گروه‌ها → ببین هر دسته چند قالب دارد.\n\n"
+    text += ("📦 گروه‌های فعلی:\n" + "\n".join(groups)) if groups else "📭 هنوز قالب دسته‌بندی‌شده‌ای نداری."
+
+    buttons = [
+        [InlineKeyboardButton("➕ افزودن قالب", callback_data="tmpl_add")],
+        [InlineKeyboardButton("📋 گروه‌های قالب", callback_data="tmpl_groups")],
+    ]
+    await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+
+async def template_groups_callback(q):
+    lines = []
+    for g, keys in sorted(TEMPLATE_GROUPS.items()):
+        valid = [k for k in keys if k in ALL_TEXTS]
+        if not valid:
+            continue
+        category, subcategory = g.split("|", 1)
+        lines.append(f"• {category} → {subcategory} ({len(valid)} قالب)")
+        for k in valid[:10]:
+            lines.append(f"   └ {k}")
+    if not lines:
+        lines = ["📭 هنوز گروهی ساخته نشده."]
+    await q.edit_message_text(
+        "📋 گروه‌های قالب:\n\n" + "\n".join(lines),
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("➕ افزودن قالب", callback_data="tmpl_add")],
+            [InlineKeyboardButton("🔙 بستن", callback_data="tmpl_close")]
+        ])
+    )
 
 async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
@@ -610,6 +695,33 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text("⛔ دسترسی نداری!")
         return
 
+
+    if data == "tmpl_close":
+        await q.edit_message_text("🧩 مدیریت قالب بسته شد.", reply_markup=None)
+        return
+
+    if data == "tmpl_groups":
+        if not has_permission(uid, "manage_templates"):
+            await q.edit_message_text("⛔ اجازه نداری!")
+            return
+        await template_groups_callback(q)
+        return
+
+    if data == "tmpl_add":
+        if not has_permission(uid, "manage_templates"):
+            await q.edit_message_text("⛔ اجازه نداری!")
+            return
+        context.user_data.clear()
+        context.user_data["state"] = "tmpl_wait_category"
+        await q.edit_message_text(
+            "🧩 ساخت قالب جدید\n\n"
+            "نوع اصلی را بفرست:\n"
+            "مثال: وطنی\n"
+            "یا: خارجی\n\n"
+            "برای لغو: لغو"
+        )
+        return
+
     if data.startswith("adm_edit:"):
         if not is_owner(uid):
             await q.edit_message_text("⛔ فقط مالک!")
@@ -707,36 +819,12 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if rh_count > 0:
                 msg += f"🎲 {rh_count} متن رندوم\n"
 
-            msg += (
-                "\n\n🤖 حالت خودکار فعاله."
-                "\nلینک رو بفرست؛ اگر لینک در ربات دوم ثبت شده باشه، "
-                "موضوع خودش پیدا می‌شه و متن مناسب همان موضوع ساخته می‌شه."
-            )
+            msg += "\n🎯 پست رو با موضوع می‌خوای یا بدون موضوع؟"
             buttons = [
-                [InlineKeyboardButton("🤖 استفاده خودکار از موضوع لینک", callback_data="postmode:auto")],
-                [InlineKeyboardButton("🎬 انتخاب موضوع دستی", callback_data="postmode:topic")],
+                [InlineKeyboardButton("🎬 با موضوع", callback_data="postmode:topic")],
                 [InlineKeyboardButton("🚫 بدون موضوع", callback_data="postmode:no_topic")]
             ]
             await q.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(buttons))
-
-    elif data == "postmode:auto":
-        if not has_permission(uid, "ready"):
-            await q.edit_message_text("⛔ اجازه نداری!")
-            return
-        if not context.user_data.get("ready_mode"):
-            await q.edit_message_text("❌ اول از 🎯 آماده‌سازی یک قالب انتخاب کن.")
-            return
-        context.user_data["post_mode"] = "auto"
-        context.user_data.pop("selected_topic", None)
-        await q.edit_message_text(
-            "🤖 حالت خودکار فعال شد.\n\n"
-            "⬇️ حالا لینک رو بده یا بنویس تمام:"
-        )
-        await context.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text="🔗 لینک رو بفرست؛ موضوع از ثبت ربات دوم خوانده می‌شه.",
-            reply_markup=MULTI_POST_KEYBOARD
-        )
 
     elif data == "postmode:topic":
         if not has_permission(uid, "ready"):
@@ -977,39 +1065,6 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.edit_message_text(f"❌ خطا: {str(e)}")
         finally:
             _USER_LOCKS[uid] = False
-    elif data.startswith("fallback_topic:"):
-        if not has_permission(uid, "ready"):
-            await q.edit_message_text("⛔ اجازه نداری!")
-            return
-        try:
-            idx = int(data.split(":", 1)[1])
-        except (TypeError, ValueError):
-            await q.edit_message_text("❌ موضوع نامعتبره.")
-            return
-        topic_names = sorted(TOPICS.keys())
-        if idx < 0 or idx >= len(topic_names):
-            await q.edit_message_text("❌ موضوع پیدا نشد.")
-            return
-        topic_name = topic_names[idx]
-        context.user_data["post_mode"] = "topic"
-        context.user_data["selected_topic"] = topic_name
-        url = context.user_data.pop("fallback_url", "")
-        if not url:
-            await q.edit_message_text("❌ لینک پیدا نشد؛ دوباره لینک را بفرست.")
-            return
-        try:
-            header, link_text, linked_word, result = build_post_result(url, ACTIVE_KEY, topic_name=topic_name)
-            add_post(uid, header, link_text, linked_word, url, result)
-            await q.edit_message_text(result, parse_mode="HTML", disable_web_page_preview=True)
-            await context.bot.send_message(
-                chat_id=update.effective_chat.id,
-                text="✅ پست ساخته شد!\n\n📝 لینک بعدی رو بده یا بنویس تمام:",
-                reply_markup=MULTI_POST_KEYBOARD
-            )
-        except Exception as e:
-            await q.edit_message_text(f"❌ خطا: {str(e)}")
-        return
-
     elif data == "topic_add":
         if not has_permission(uid, "manage_topics"):
             await q.edit_message_text("⛔ اجازه مدیریت موضوعات رو نداری!")
@@ -1248,6 +1303,122 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.pop("state", None)
         await update.message.reply_text(f"🗑 ادمین {rem_id} برکنار شد!", reply_markup=ADMIN_MANAGE_KEYBOARD)
         return
+
+    if state == "tmpl_wait_category":
+        if not has_permission(uid, "manage_templates"):
+            context.user_data.clear()
+            await update.message.reply_text("⛔ اجازه نداری!", reply_markup=get_main_keyboard(uid))
+            return
+        if text in {"لغو", "❌ لغو"}:
+            context.user_data.clear()
+            await update.message.reply_text("❌ لغو شد.", reply_markup=get_main_keyboard(uid))
+            return
+        context.user_data["tmpl_category"] = text.strip()
+        context.user_data["state"] = "tmpl_wait_subcategory"
+        await update.message.reply_text(
+            f"✅ نوع اصلی: {text.strip()}\n\n"
+            "حالا زیرنوع/مدل را بفرست.\n"
+            "مثال: فوتبال\n"
+            "یا: فیلم\n\n"
+            "برای لغو: لغو"
+        )
+        return
+
+    if state == "tmpl_wait_subcategory":
+        if not has_permission(uid, "manage_templates"):
+            context.user_data.clear()
+            await update.message.reply_text("⛔ اجازه نداری!", reply_markup=get_main_keyboard(uid))
+            return
+        if text in {"لغو", "❌ لغو"}:
+            context.user_data.clear()
+            await update.message.reply_text("❌ لغو شد.", reply_markup=get_main_keyboard(uid))
+            return
+        context.user_data["tmpl_subcategory"] = text.strip()
+        context.user_data["state"] = "tmpl_wait_link_text"
+        await update.message.reply_text(
+            "📝 حالا متن پایین قالب را بفرست.\n\n"
+            "مثال:\n"
+            "Download pack مشـ.ـاهده ✅\n\n"
+            "کلمه‌ای که باید لینک شود را بعداً می‌پرسم."
+        )
+        return
+
+    if state == "tmpl_wait_link_text":
+        if not has_permission(uid, "manage_templates"):
+            context.user_data.clear()
+            await update.message.reply_text("⛔ اجازه نداری!", reply_markup=get_main_keyboard(uid))
+            return
+        context.user_data["tmpl_link_text"] = text
+        context.user_data["state"] = "tmpl_wait_linked_word"
+        await update.message.reply_text(
+            "🔗 کدام کلمه/عبارت از متن باید لینک شود؟\n\n"
+            f"{text}\n\n"
+            "اگر می‌خواهی کل متن لینک شود، بنویس: همه"
+        )
+        return
+
+    if state == "tmpl_wait_linked_word":
+        if not has_permission(uid, "manage_templates"):
+            context.user_data.clear()
+            await update.message.reply_text("⛔ اجازه نداری!", reply_markup=get_main_keyboard(uid))
+            return
+        link_text = context.user_data.get("tmpl_link_text", "")
+        linked_word = "" if text.strip() == "همه" else text.strip()
+        if linked_word and linked_word not in link_text:
+            await update.message.reply_text("❌ این عبارت داخل متن نیست. دوباره بفرست.")
+            return
+        context.user_data["tmpl_linked_word"] = linked_word
+        context.user_data["state"] = "tmpl_wait_name"
+        await update.message.reply_text(
+            "🏷 حالا یک اسم یکتا برای قالب بفرست.\n"
+            "مثال: v_fut_01"
+        )
+        return
+
+    if state == "tmpl_wait_name":
+        if not has_permission(uid, "manage_templates"):
+            context.user_data.clear()
+            await update.message.reply_text("⛔ اجازه نداری!", reply_markup=get_main_keyboard(uid))
+            return
+        name = text.strip()
+        if not name or name in ALL_TEXTS:
+            await update.message.reply_text("❌ این اسم خالی است یا قبلاً استفاده شده. یک اسم دیگر بفرست.")
+            return
+
+        category = context.user_data.get("tmpl_category", "").strip()
+        subcategory = context.user_data.get("tmpl_subcategory", "").strip()
+        link_text = context.user_data.get("tmpl_link_text", "")
+        linked_word = context.user_data.get("tmpl_linked_word", "")
+
+        ALL_TEXTS[name] = {
+            "header": "",
+            "link_text": link_text,
+            "linked_word": linked_word,
+            "footer": "",
+            "random_headers": [],
+            "blockquote": False
+        }
+        g = group_key(category, subcategory)
+        TEMPLATE_GROUPS.setdefault(g, [])
+        if name not in TEMPLATE_GROUPS[g]:
+            TEMPLATE_GROUPS[g].append(name)
+
+        save_texts()
+        save_template_groups()
+        context.user_data.clear()
+
+        await update.message.reply_text(
+            f"✅ قالب ساخته شد!\n\n"
+            f"🏷 نام: {name}\n"
+            f"🇮🇷/🌍 نوع: {category}\n"
+            f"🎯 مدل: {subcategory}\n"
+            f"🔗 متن: {link_text}\n\n"
+            "از این به بعد اگر لینک با همین نوع/مدل از ربات دوم بیاید، "
+            "ربات اصلی فقط از همین گروه قالب انتخاب می‌کند.",
+            reply_markup=get_main_keyboard(uid)
+        )
+        return
+
     if state == "waiting_random_header":
         if not has_permission(uid, "list"):
             await update.message.reply_text("⛔ اجازه نداری!", reply_markup=get_main_keyboard(uid))
@@ -1392,6 +1563,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if text == "📋 لیست متن‌ها":
         await list_cmd(update, context)
         return
+    if text == "🧩 مدیریت قالب‌ها":
+        await template_manager_cmd(update, context)
+        return
     if text == "➕ افزودن متن":
         if not has_permission(uid, "add_text"):
             await update.message.reply_text("⛔ اجازه افزودن متن رو نداری!", reply_markup=get_main_keyboard(uid))
@@ -1427,42 +1601,33 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         post_mode = context.user_data.get("post_mode")
-        if post_mode not in {"auto", "topic", "no_topic"}:
+        if post_mode not in {"topic", "no_topic"}:
             await update.message.reply_text(
-                "🤖 اول حالت خودکار رو فعال کن یا موضوع دستی انتخاب کن.",
+                "🎯 اول مشخص کن پست با موضوع باشه یا بدون موضوع.",
                 reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🤖 موضوع خودکار از لینک", callback_data="postmode:auto")],
-                    [InlineKeyboardButton("🎬 موضوع دستی", callback_data="postmode:topic")],
+                    [InlineKeyboardButton("🎬 با موضوع", callback_data="postmode:topic")],
                     [InlineKeyboardButton("🚫 بدون موضوع", callback_data="postmode:no_topic")]
                 ])
             )
             return
 
         topic_name = context.user_data.get("selected_topic") if post_mode == "topic" else None
+        mapped = get_link_mapping(url) if post_mode == "no_topic" else None
+
         if post_mode == "topic" and not topic_name:
             await update.message.reply_text("🎬 اول یک موضوع انتخاب کن.")
             return
 
-        if post_mode in {"auto", "no_topic"}:
-            topic_name = resolve_topic_for_link(url)
+        # When the link was classified by the second bot, recover both
+        # category and subcategory automatically.
+        if post_mode == "no_topic" and mapped:
+            if mapped.get("topic_name"):
+                topic_name = mapped.get("topic_name")
 
-        # اگر لینک توسط ربات دوم ثبت نشده باشد، در حالت خودکار به کاربر اجازه می‌دهیم
-        # موضوع را دستی انتخاب کند؛ بنابراین لینک گم نمی‌شود و ساخت پست متوقف نمی‌ماند.
-        if post_mode == "auto" and not topic_name:
-            topic_names = sorted(TOPICS.keys())
-            if not topic_names:
-                await update.message.reply_text(
-                    "❌ برای این لینک موضوعی از ربات دوم پیدا نشد و موضوع دستی هم وجود ندارد.",
-                    reply_markup=MULTI_POST_KEYBOARD
-                )
-                return
-            context.user_data["fallback_url"] = url
-            buttons = [[InlineKeyboardButton(name, callback_data=f"fallback_topic:{idx}")] for idx, name in enumerate(topic_names)]
-            await update.message.reply_text(
-                "⚠️ این لینک در Bridge ثبت نشده.\n\n🎬 موضوع را دستی انتخاب کن:",
-                reply_markup=InlineKeyboardMarkup(buttons)
-            )
-            return
+        # Choose a template from the exact category/subcategory group.
+        selected_template_key = ACTIVE_KEY
+        if post_mode == "no_topic" and mapped:
+            selected_template_key = choose_template_for_link(mapped)
 
         if _USER_LOCKS.get(uid):
             await update.message.reply_text("⏳ قبلاً در حال پردازش یک لینک هستی.")
@@ -1472,7 +1637,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             header, link_text, linked_word, result = build_post_result(
                 url,
-                ACTIVE_KEY,
+                selected_template_key,
                 topic_name=topic_name
             )
             add_post(uid, header, link_text, linked_word, url, result)
@@ -1562,6 +1727,7 @@ def main():
     print(f"📄 Admins file: {ADMINS_FILE} ({os.path.getsize(ADMINS_FILE) if os.path.exists(ADMINS_FILE) else 'new'})")
     print(f"📄 Posts file: {POSTS_FILE} ({os.path.getsize(POSTS_FILE) if os.path.exists(POSTS_FILE) else 'new'})")
     print(f"📄 Link registry: {LINK_REGISTRY_FILE} ({os.path.getsize(LINK_REGISTRY_FILE) if os.path.exists(LINK_REGISTRY_FILE) else 'new'})")
+    print(f"📄 Template groups: {TEMPLATE_GROUPS_FILE} ({os.path.getsize(TEMPLATE_GROUPS_FILE) if os.path.exists(TEMPLATE_GROUPS_FILE) else 'new'})")
     print(f"🔑 Link bridge key: {LINK_BRIDGE_KEY}")
     start_link_bridge_server()
     app = Application.builder().token(TOKEN).post_init(post_init).build()
