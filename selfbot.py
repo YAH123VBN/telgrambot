@@ -25,7 +25,7 @@ def data_path(filename):
     """Return the persistent data-file path."""
     return os.path.join(DATA_DIR, filename)
 
-TOKEN = os.getenv("TOKEN")
+TOKEN = TOKEN = os.getenv("TOKEN")
 TEXTS_FILE = data_path("saved_texts.json")
 POSTS_FILE = data_path("my_posts.json")
 TOPICS_FILE = data_path("topics.json")
@@ -169,6 +169,50 @@ def get_posts(user_id):
     posts = load_json(POSTS_FILE, {})
     return posts.get(str(user_id), [])
 
+
+def build_post_result(url, template_key, topic_name=None):
+    """Build a post using the selected template, with or without a topic."""
+    base = ALL_TEXTS.get(template_key, {})
+    if not base:
+        raise ValueError("قالب پیدا نشد.")
+
+    link_text = base.get("link_text", "download")
+    linked_word = base.get("linked_word", "")
+    footer = base.get("footer", "")
+    bq = base.get("blockquote", False)
+
+    if topic_name is not None:
+        header = TOPICS.get(topic_name, "")
+        if "\n" in link_text:
+            link_text = link_text.split("\n", 1)[1].lstrip("\n")
+    else:
+        rh = base.get("random_headers", [])
+        header = random.choice(rh) if rh else ""
+
+    if linked_word and linked_word not in link_text:
+        linked_word = ""
+
+    if linked_word and linked_word in link_text:
+        parts = link_text.split(linked_word, 1)
+        link_anchor = f'<a href="{url}">{escape(linked_word)}</a>'
+        if bq:
+            link_anchor = f"<blockquote>{link_anchor}</blockquote>"
+        link_part = f"{escape(parts[0])}{link_anchor}{escape(parts[1])}"
+    else:
+        link_part = f'<a href="{url}">{escape(link_text)}</a>'
+        if bq:
+            link_part = f"<blockquote>{link_part}</blockquote>"
+
+    parts_list = []
+    if header:
+        parts_list.append(f"<b>{escape(header)}</b>")
+    parts_list.append(link_part)
+    if footer:
+        parts_list.append(escape(footer))
+
+    result = preserve_spaces("\n".join(parts_list))
+    return header, link_text, linked_word, result
+
 # ═══════════════════════════════════════════════════
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
@@ -177,12 +221,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await update.message.reply_text(
         "👋 سلام!\n\n"
-        "🎯 آماده‌سازی → یه قالب انتخاب کن، بعد فقط لینک بده\n"
+        "🎯 آماده‌سازی → قالب رو انتخاب کن، بعد با موضوع یا بدون موضوع رو مشخص کن\n"
         "📋 لیست متن‌ها → مدیریت قالب‌ها + متن‌های رندوم\n"
         "➕ افزودن متن → ساخت قالب جدید\n"
         "📁 پست‌های من → همه پست‌ها\n\n"
-        "💡 نکته: وقتی قالبی رو با 🎯 آماده‌سازی انتخاب کنی،\n"
-        "هر لینکی بدی همونجوری پست می‌سازه!",
+        "💡 نکته: بعد از انتخاب قالب، می‌تونی پست رو با موضوع یا بدون موضوع بسازی.\n"
+        "در حالت بدون موضوع، بعد از لینک مستقیم پست ساخته می‌شه.",
         reply_markup=get_main_keyboard(uid)
     )
 
@@ -329,7 +373,7 @@ async def ready_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         buttons.append([InlineKeyboardButton(f"{mark}{k} — {lt} (🎲{rh_count})", callback_data=f"ready:{k}")])
     await update.message.reply_text(
         "🎯 کدوم قالب رو می‌خوای آماده کنی؟\n\n"
-        "👆 انتخاب کن، بعد فقط لینک بده!",
+        "👆 انتخاب کن، بعد مشخص می‌کنی با موضوع یا بدون موضوع.",
         reply_markup=InlineKeyboardMarkup(buttons)
     )
 
@@ -486,12 +530,16 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if k in ALL_TEXTS:
             ACTIVE_KEY = k
             context.user_data["ready_mode"] = True
+            context.user_data.pop("pending_url", None)
+            context.user_data.pop("selected_topic", None)
+            context.user_data.pop("post_mode", None)
+
             t = ALL_TEXTS[k]
             lw = t.get("linked_word", "")
             footer = t.get("footer", "")
-            rh = t.get("random_headers", [])
+            rh_count = len(t.get("random_headers", []))
             bq = t.get("blockquote", False)
-            rh_count = len(rh)
+
             msg = (
                 f"🎯 قالب {k} آماده‌ست!\n\n"
                 f"🔗 {t.get('link_text', '')}\n"
@@ -503,13 +551,121 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             msg += f"💬 نقل‌قول: {'✅ روشن' if bq else '❌ خاموش'}\n"
             if rh_count > 0:
                 msg += f"🎲 {rh_count} متن رندوم\n"
-            msg += "\n✅ حالا فقط لینک بده، من پست می‌سازم!"
-            await q.edit_message_text(msg)
-            await context.bot.send_message(
-                chat_id=update.effective_chat.id,
-                text="⬇️ لینک رو بده یا بنویس تمام:",
-                reply_markup=MULTI_POST_KEYBOARD
+
+            msg += "\n🎯 پست رو با موضوع می‌خوای یا بدون موضوع؟"
+            buttons = [
+                [InlineKeyboardButton("🎬 با موضوع", callback_data="postmode:topic")],
+                [InlineKeyboardButton("🚫 بدون موضوع", callback_data="postmode:no_topic")]
+            ]
+            await q.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(buttons))
+
+    elif data == "postmode:topic":
+        if not has_permission(uid, "ready"):
+            await q.edit_message_text("⛔ اجازه نداری!")
+            return
+        if not context.user_data.get("ready_mode"):
+            await q.edit_message_text("❌ اول از 🎯 آماده‌سازی یک قالب انتخاب کن.")
+            return
+
+        context.user_data["post_mode"] = "topic"
+        context.user_data.pop("selected_topic", None)
+        topic_names = sorted(TOPICS.keys())
+
+        if not topic_names:
+            await q.edit_message_text(
+                "📭 هنوز هیچ موضوعی ساخته نشده.\n\nاول یک موضوع بساز، بعد لینک رو بده.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("➕ افزودن موضوع", callback_data="topic_add")]
+                ])
             )
+            return
+
+        buttons = [
+            [InlineKeyboardButton(name, callback_data=f"topicselect:{idx}")]
+            for idx, name in enumerate(topic_names)
+        ]
+        buttons.append([
+            InlineKeyboardButton("➕ افزودن موضوع", callback_data="topic_add"),
+            InlineKeyboardButton("🗑 حذف موضوع", callback_data="topic_del_menu")
+        ])
+        await q.edit_message_text(
+            "🎬 موضوع رو انتخاب کن:",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
+
+    elif data == "postmode:no_topic":
+        if not has_permission(uid, "ready"):
+            await q.edit_message_text("⛔ اجازه نداری!")
+            return
+        if not context.user_data.get("ready_mode"):
+            await q.edit_message_text("❌ اول از 🎯 آماده‌سازی یک قالب انتخاب کن.")
+            return
+
+        context.user_data["post_mode"] = "no_topic"
+        context.user_data.pop("selected_topic", None)
+        await q.edit_message_text("🚫 بدون موضوع انتخاب شد.")
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text="⬇️ حالا لینک رو بده یا بنویس تمام:",
+            reply_markup=MULTI_POST_KEYBOARD
+        )
+
+    elif data.startswith("topicselect:"):
+        if not has_permission(uid, "ready"):
+            await q.edit_message_text("⛔ اجازه نداری!")
+            return
+        if not context.user_data.get("ready_mode"):
+            await q.edit_message_text("❌ اول از 🎯 آماده‌سازی یک قالب انتخاب کن.")
+            return
+
+        try:
+            idx = int(data.split(":", 1)[1])
+        except (TypeError, ValueError):
+            await q.edit_message_text("❌ موضوع نامعتبره.")
+            return
+
+        topic_names = sorted(TOPICS.keys())
+        if idx < 0 or idx >= len(topic_names):
+            await q.edit_message_text("❌ این موضوع پیدا نشد.")
+            return
+
+        topic_name = topic_names[idx]
+        context.user_data["post_mode"] = "topic"
+        context.user_data["selected_topic"] = topic_name
+
+        await q.edit_message_text(f"🎬 موضوع «{topic_name}» انتخاب شد.")
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text="⬇️ حالا لینک رو بده یا بنویس تمام:",
+            reply_markup=MULTI_POST_KEYBOARD
+        )
+
+    elif data.startswith("ts:"):
+        # Backward-compatible handler for old topic buttons.
+        if not has_permission(uid, "ready"):
+            await q.edit_message_text("⛔ اجازه نداری!")
+            return
+        try:
+            idx = int(data[3:])
+        except (TypeError, ValueError):
+            await q.edit_message_text("❌ موضوع نامعتبره.")
+            return
+
+        topic_names = sorted(TOPICS.keys())
+        if idx < 0 or idx >= len(topic_names):
+            await q.edit_message_text("❌ موضوع پیدا نشد.")
+            return
+
+        topic_name = topic_names[idx]
+        context.user_data["post_mode"] = "topic"
+        context.user_data["selected_topic"] = topic_name
+        await q.edit_message_text(f"🎬 موضوع «{topic_name}» انتخاب شد.")
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text="⬇️ حالا لینک رو بده یا بنویس تمام:",
+            reply_markup=MULTI_POST_KEYBOARD
+        )
+
     elif data.startswith("del:"):
         if not has_permission(uid, "list"):
             await q.edit_message_text("⛔ اجازه نداری!")
@@ -930,12 +1086,16 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         TOPICS[name] = text
         save_texts()
         if context.user_data.get("ready_mode"):
+            # If a topic is added during the "با موضوع" flow,
+            # use the newly created/updated topic immediately.
+            context.user_data["post_mode"] = "topic"
+            context.user_data["selected_topic"] = name
             context.user_data.pop("state", None)
             context.user_data.pop("topic_name", None)
             await update.message.reply_text(
                 f"✅ موضوع {name} {'جایگزین شد' if existed else 'اضافه شد'}!\n\n"
                 f"📝 {text}\n\n"
-                "لینک رو بده یا بنویس تمام:",
+                "⬇️ حالا لینک رو بده یا بنویس تمام:",
                 reply_markup=MULTI_POST_KEYBOARD
             )
         else:
@@ -1048,23 +1208,64 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     url = matches[0]
     if context.user_data.get("ready_mode"):
         if not has_permission(uid, "ready"):
-            await update.message.reply_text("⛔ اجازه ساخت پست رو نداری!", reply_markup=get_main_keyboard(uid))
+            await update.message.reply_text(
+                "⛔ اجازه ساخت پست رو نداری!",
+                reply_markup=get_main_keyboard(uid)
+            )
             return
-        context.user_data["pending_url"] = url
-        topic_names = sorted(TOPICS.keys())
-        buttons = []
-        for idx, name in enumerate(topic_names):
-            buttons.append([InlineKeyboardButton(f"{name}", callback_data=f"ts:{idx}")])
-        buttons.append([
-            InlineKeyboardButton("➕ افزودن موضوع", callback_data="topic_add"),
-            InlineKeyboardButton("🗑 حذف موضوع", callback_data="topic_del_menu")
-        ])
-        await update.message.reply_text(
-            f"🔗 لینک دریافت شد!\n\n"
-            "🎬 حالا موضوع رو انتخاب کن:",
-            reply_markup=InlineKeyboardMarkup(buttons)
-        )
+
+        post_mode = context.user_data.get("post_mode")
+        if post_mode not in {"topic", "no_topic"}:
+            await update.message.reply_text(
+                "🎯 اول مشخص کن پست با موضوع باشه یا بدون موضوع.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🎬 با موضوع", callback_data="postmode:topic")],
+                    [InlineKeyboardButton("🚫 بدون موضوع", callback_data="postmode:no_topic")]
+                ])
+            )
+            return
+
+        topic_name = context.user_data.get("selected_topic") if post_mode == "topic" else None
+        if post_mode == "topic" and not topic_name:
+            await update.message.reply_text("🎬 اول یک موضوع انتخاب کن.")
+            return
+
+        if _USER_LOCKS.get(uid):
+            await update.message.reply_text("⏳ قبلاً در حال پردازش یک لینک هستی.")
+            return
+
+        _USER_LOCKS[uid] = True
+        try:
+            header, link_text, linked_word, result = build_post_result(
+                url,
+                ACTIVE_KEY,
+                topic_name=topic_name
+            )
+            add_post(uid, header, link_text, linked_word, url, result)
+
+            await update.message.reply_text(
+                result,
+                parse_mode="HTML",
+                disable_web_page_preview=True
+            )
+            await update.message.reply_text(
+                "✅ پست ساخته شد!\n\n📝 لینک بعدی رو بده یا بنویس تمام:",
+                reply_markup=MULTI_POST_KEYBOARD
+            )
+        except NetworkError:
+            await update.message.reply_text(
+                "⚠️ پست ساخته شد ولی به خاطر مشکل اینترنت نتونستم بفرستم.",
+                reply_markup=MULTI_POST_KEYBOARD
+            )
+        except Exception as e:
+            await update.message.reply_text(
+                f"❌ خطا: {str(e)}",
+                reply_markup=MULTI_POST_KEYBOARD
+            )
+        finally:
+            _USER_LOCKS[uid] = False
         return
+
     template = ALL_TEXTS.get(ACTIVE_KEY)
     if not template:
         await update.message.reply_text(
