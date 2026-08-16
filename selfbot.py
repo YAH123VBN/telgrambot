@@ -131,7 +131,7 @@ def can_use_bot(user_id: int) -> bool:
 def get_main_keyboard(user_id: int):
     buttons = [
         ["🎯 آماده‌سازی", "📋 لیست متن‌ها"],
-        ["➕ افزودن متن", "🧩 مدیریت قالب‌ها"],
+        ["➕ افزودن متن"],
         ["📁 پست‌های من"],
     ]
     if is_owner(user_id):
@@ -1592,7 +1592,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❓ لینک ندیدم!", reply_markup=get_main_keyboard(uid))
         return
     url = matches[0]
-    if context.user_data.get("ready_mode"):
+
+    # =====================================================
+    # AUTO MODE: if the link was classified by the second bot,
+    # build the post immediately. No template/topic selection
+    # is required in the main bot.
+    # =====================================================
+    mapped = get_link_mapping(url)
+    if mapped:
         if not has_permission(uid, "ready"):
             await update.message.reply_text(
                 "⛔ اجازه ساخت پست رو نداری!",
@@ -1600,41 +1607,23 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        post_mode = context.user_data.get("post_mode")
-        if post_mode not in {"topic", "no_topic"}:
-            await update.message.reply_text(
-                "🎯 اول مشخص کن پست با موضوع باشه یا بدون موضوع.",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🎬 با موضوع", callback_data="postmode:topic")],
-                    [InlineKeyboardButton("🚫 بدون موضوع", callback_data="postmode:no_topic")]
-                ])
-            )
-            return
-
-        topic_name = context.user_data.get("selected_topic") if post_mode == "topic" else None
-        mapped = get_link_mapping(url) if post_mode == "no_topic" else None
-
-        if post_mode == "topic" and not topic_name:
-            await update.message.reply_text("🎬 اول یک موضوع انتخاب کن.")
-            return
-
-        # When the link was classified by the second bot, recover both
-        # category and subcategory automatically.
-        if post_mode == "no_topic" and mapped:
-            if mapped.get("topic_name"):
-                topic_name = mapped.get("topic_name")
-
-        # Choose a template from the exact category/subcategory group.
-        selected_template_key = ACTIVE_KEY
-        if post_mode == "no_topic" and mapped:
-            selected_template_key = choose_template_for_link(mapped)
-
         if _USER_LOCKS.get(uid):
             await update.message.reply_text("⏳ قبلاً در حال پردازش یک لینک هستی.")
             return
 
+        selected_template_key = choose_template_for_link(mapped)
+        if selected_template_key not in ALL_TEXTS:
+            await update.message.reply_text(
+                "❌ برای این نوع و مدل هنوز قالبی ثبت نشده.\n\n"
+                f"نوع: {mapped.get('category') or '—'}\n"
+                f"مدل: {mapped.get('subcategory') or '—'}",
+                reply_markup=get_main_keyboard(uid)
+            )
+            return
+
         _USER_LOCKS[uid] = True
         try:
+            topic_name = mapped.get("topic_name") or mapped.get("category") or None
             header, link_text, linked_word, result = build_post_result(
                 url,
                 selected_template_key,
@@ -1648,22 +1637,63 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 disable_web_page_preview=True
             )
             await update.message.reply_text(
-                "✅ پست ساخته شد!\n\n📝 لینک بعدی رو بده یا بنویس تمام:",
-                reply_markup=MULTI_POST_KEYBOARD
+                "✅ پست ساخته شد!\n\n🔗 لینک بعدی رو بفرست.",
+                reply_markup=get_main_keyboard(uid)
             )
         except NetworkError:
             await update.message.reply_text(
-                "⚠️ پست ساخته شد ولی به خاطر مشکل اینترنت نتونستم بفرستم.",
-                reply_markup=MULTI_POST_KEYBOARD
+                "⚠️ مشکل شبکه پیش آمد. دوباره امتحان کن.",
+                reply_markup=get_main_keyboard(uid)
             )
         except Exception as e:
             await update.message.reply_text(
                 f"❌ خطا: {str(e)}",
-                reply_markup=MULTI_POST_KEYBOARD
+                reply_markup=get_main_keyboard(uid)
             )
         finally:
             _USER_LOCKS[uid] = False
         return
+
+    # No bridge record: keep the old preparation flow as a fallback.
+    if context.user_data.get("ready_mode"):
+        if not has_permission(uid, "ready"):
+            await update.message.reply_text(
+                "⛔ اجازه ساخت پست رو نداری!",
+                reply_markup=get_main_keyboard(uid)
+            )
+            return
+
+        post_mode = context.user_data.get("post_mode")
+        if post_mode not in {"topic", "no_topic"}:
+            await update.message.reply_text(
+                "🎯 این لینک هنوز از ربات دوم دسته‌بندی نشده.\n\n"
+                "اگر می‌خواهی خودکار ساخته شود، اول لینک را در ربات دوم ثبت کن.",
+                reply_markup=get_main_keyboard(uid)
+            )
+            return
+
+        topic_name = context.user_data.get("selected_topic") if post_mode == "topic" else None
+        selected_template_key = ACTIVE_KEY
+        if post_mode == "no_topic":
+            selected_template_key = ACTIVE_KEY
+
+        try:
+            header, link_text, linked_word, result = build_post_result(
+                url, selected_template_key, topic_name=topic_name
+            )
+            add_post(uid, header, link_text, linked_word, url, result)
+            await update.message.reply_text(result, parse_mode="HTML", disable_web_page_preview=True)
+            await update.message.reply_text("✅ پست ساخته شد!", reply_markup=get_main_keyboard(uid))
+        except Exception as e:
+            await update.message.reply_text(f"❌ خطا: {str(e)}", reply_markup=get_main_keyboard(uid))
+        return
+
+    await update.message.reply_text(
+        "⚠️ این لینک هنوز توسط ربات دوم دسته‌بندی نشده.\n\n"
+        "اول لینک را در ربات دوم ثبت کن، نوع و مدل را انتخاب کن؛ بعد همین لینک را اینجا بفرست.",
+        reply_markup=get_main_keyboard(uid)
+    )
+    return
 
     template = ALL_TEXTS.get(ACTIVE_KEY)
     if not template:
