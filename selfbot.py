@@ -3,22 +3,29 @@ import os
 import re
 import asyncio
 import random
+import zipfile
+from datetime import datetime
 from html import escape
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 from telegram.error import NetworkError
 
 # ═══════════════════════════════════════════════════
-# CRITICAL FIX: All files save NEXT to this .py file
+# Persistent data directory
+# On Railway, use the mounted Volume so JSON data survives redeploys.
+# Locally, keep data next to the .py file.
 # ═══════════════════════════════════════════════════
-DATA_DIR = os.environ.get("RAILWAY_VOLUME_MOUNT_PATH", "/data")
-
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR = os.environ.get("RAILWAY_VOLUME_MOUNT_PATH")
+if not DATA_DIR:
+    DATA_DIR = "/data" if os.environ.get("RAILWAY_ENVIRONMENT") else SCRIPT_DIR
 os.makedirs(DATA_DIR, exist_ok=True)
 
 def data_path(filename):
+    """Return the persistent data-file path."""
     return os.path.join(DATA_DIR, filename)
 
-TOKEN = os.getenv("TOKEN")
+TOKEN = "8743722675:AAGkZAdXX7ufh3kWTvcIrsikXdkVbhsrXXA"
 TEXTS_FILE = data_path("saved_texts.json")
 POSTS_FILE = data_path("my_posts.json")
 TOPICS_FILE = data_path("topics.json")
@@ -186,6 +193,46 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "هر لینکی بدی همونجوری پست می‌سازه!",
         reply_markup=get_main_keyboard(uid)
     )
+
+async def backup_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Create and send a manual backup of the bot's JSON data. Owner only."""
+    uid = update.effective_user.id
+    if not is_owner(uid):
+        await update.message.reply_text("⛔ فقط مالک ربات می‌تونه بکاپ بگیره!")
+        return
+
+    files = [ADMINS_FILE, TEXTS_FILE, TOPICS_FILE, POSTS_FILE]
+    existing_files = [path for path in files if os.path.isfile(path)]
+
+    if not existing_files:
+        await update.message.reply_text("❌ هیچ فایل دیتایی برای بکاپ وجود نداره!")
+        return
+
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    backup_file = os.path.join(DATA_DIR, f"bot_backup_{timestamp}.zip")
+
+    try:
+        with zipfile.ZipFile(backup_file, "w", zipfile.ZIP_DEFLATED) as zipf:
+            for file_path in existing_files:
+                zipf.write(file_path, arcname=os.path.basename(file_path))
+
+        with open(backup_file, "rb") as backup_stream:
+            await update.message.reply_document(
+                document=backup_stream,
+                filename=os.path.basename(backup_file),
+                caption=f"📦 بکاپ آماده شد!\n\n🕐 {timestamp}"
+            )
+    except Exception as e:
+        print(f"[BACKUP ERROR] {e}")
+        await update.message.reply_text("❌ گرفتن بکاپ با خطا مواجه شد. لاگ Railway رو بررسی کن.")
+    finally:
+        # The backup is manual and temporary; it is deleted after being sent.
+        try:
+            if os.path.exists(backup_file):
+                os.remove(backup_file)
+        except Exception as e:
+            print(f"[BACKUP CLEANUP ERROR] {e}")
+
 
 async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
@@ -1044,14 +1091,23 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 # ═══════════════════════════════════════════════════
+async def post_init(app):
+    # Show these commands in Telegram's Menu button.
+    await app.bot.set_my_commands([
+        ("start", "استارت ربات"),
+        ("backup", "گرفتن بکاپ از اطلاعات ربات"),
+    ])
+
+
 def main():
     print(f"📁 Data folder: {DATA_DIR}")
     print(f"📄 Texts file: {TEXTS_FILE} ({os.path.getsize(TEXTS_FILE) if os.path.exists(TEXTS_FILE) else 'new'})")
     print(f"📄 Topics file: {TOPICS_FILE} ({os.path.getsize(TOPICS_FILE) if os.path.exists(TOPICS_FILE) else 'new'})")
     print(f"📄 Admins file: {ADMINS_FILE} ({os.path.getsize(ADMINS_FILE) if os.path.exists(ADMINS_FILE) else 'new'})")
     print(f"📄 Posts file: {POSTS_FILE} ({os.path.getsize(POSTS_FILE) if os.path.exists(POSTS_FILE) else 'new'})")
-    app = Application.builder().token(TOKEN).build()
+    app = Application.builder().token(TOKEN).post_init(post_init).build()
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("backup", backup_cmd))
     app.add_handler(CommandHandler("add", add_cmd))
     app.add_handler(CommandHandler("list", list_cmd))
     app.add_handler(CommandHandler("ready", ready_cmd))
