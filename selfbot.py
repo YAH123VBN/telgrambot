@@ -132,7 +132,8 @@ def can_use_bot(user_id: int) -> bool:
 def get_main_keyboard(user_id: int):
     buttons = [
         ["🎯 آماده‌سازی", "📋 لیست متن‌ها"],
-                ["⚡ پست سریع"],
+        ["📁 بخش‌ها"],
+        ["⚡ پست سریع"],
         ["📁 پست‌های من"],
     ]
     if is_owner(user_id):
@@ -762,7 +763,7 @@ async def show_section(q, g):
     if g != "__ungrouped__":
         buttons.append([InlineKeyboardButton(f"{'⛔ خاموش کردن' if enabled else '⚡ روشن کردن'} پست سریع این بخش", callback_data=f"quicktoggle:{g}")])
     if g != "__ungrouped__":
-        buttons.append([InlineKeyboardButton("➕ افزودن متن به این بخش", callback_data=f"section_add_text:{g}")])
+        buttons.append([InlineKeyboardButton("➕ افزودن متن", callback_data=f"section_add_text:{g}")])
         buttons.append([InlineKeyboardButton("📦 افزودن قالب موجود به این بخش", callback_data=f"section_add_template:{g}")])
     else:
         buttons.append([InlineKeyboardButton("➕ افزودن متن", callback_data="tmpl_add")])
@@ -790,6 +791,10 @@ async def titles_all_start(q, context, g):
     await q.edit_message_text(msg)
 
 async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global ACTIVE_KEY
+    q = update.callback_query
+    await q.answer()
+    data = q.data
 
     if data == "sections_menu":
         groups = list(TEMPLATE_GROUPS.keys())
@@ -802,10 +807,6 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(buttons)
         )
         return
-    global ACTIVE_KEY
-    q = update.callback_query
-    await q.answer()
-    data = q.data
     uid = update.effective_user.id
 
     if data == "quick_close":
@@ -1563,19 +1564,20 @@ async def rebuild_admin_perms_inline(q, target_id):
 
 # ═══════════════════════════════════════════════════
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global ACTIVE_KEY
+    text = update.message.text or ""
 
     if text == "📁 بخش‌ها":
         groups = list(TEMPLATE_GROUPS.keys())
         buttons = [[InlineKeyboardButton("➕ ساخت بخش جدید", callback_data="section_add")]]
         for g in groups:
             buttons.append([InlineKeyboardButton("📁 " + section_title(g), callback_data=f"section:{g}")])
+        buttons.append([InlineKeyboardButton("🔙 بازگشت", callback_data="back_main")])
         await update.message.reply_text(
             "📁 بخش‌ها\n\nیک بخش را انتخاب کن یا بخش جدید بساز.",
             reply_markup=InlineKeyboardMarkup(buttons)
         )
         return
-    global ACTIVE_KEY
-    text = update.message.text or ""
     state = context.user_data.get("state")
     uid = update.effective_user.id
     if not can_use_bot(uid):
@@ -1973,7 +1975,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.clear()
         await update.message.reply_text(
             f"✅ بخش «{name}» ساخته شد.\n\n"
-            "حالا می‌تونی مستقیم داخل همین بخش متن/قالب اضافه کنی.",
+            "بخش ساخته شد. حالا واردش شو و از «➕ افزودن متن» قالب بساز.",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("📁 ورود به بخش", callback_data=f"section:{g}")],
                 [InlineKeyboardButton("📁 بخش‌ها", callback_data="sections_menu")]
