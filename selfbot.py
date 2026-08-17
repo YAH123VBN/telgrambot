@@ -2092,7 +2092,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         chunks.pop(0)
                     item["link_text"] = "\n".join(chunks)
 
+            # IMPORTANT: this is a TOTAL replacement of the rendered title.
+            # The new line becomes the only title source for this template.
+            # Do not let an old header/random header/topic survive.
             item["title"] = new_title
+            item["header"] = new_title
+            item["random_headers"] = []
         save_texts(); context.user_data.clear()
         await update.message.reply_text(f"✅ {changed} عنوان تغییر کرد.\n📌 بقیه قالب‌ها دست‌نخورده ماندند.", reply_markup=get_main_keyboard(uid))
         return
@@ -2379,7 +2384,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         _USER_LOCKS[uid] = True
         try:
-            topic_name = mapped.get("topic_name") or mapped.get("category") or None
+            # If this template has a manually assigned title, that title is
+            # authoritative. Do NOT pass the automatic topic/category header
+            # into the builder, otherwise the old topic header can appear
+            # together with the custom title (or override it in older logic).
+            custom_title = str(ALL_TEXTS.get(selected_template_key, {}).get("title", "") or "").strip()
+            topic_name = None if custom_title else (mapped.get("topic_name") or mapped.get("category") or None)
             header, link_text, linked_word, result = build_post_result(
                 url,
                 selected_template_key,
@@ -2432,6 +2442,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         selected_template_key = ACTIVE_KEY
         if post_mode == "no_topic":
             selected_template_key = ACTIVE_KEY
+
+        # A custom title replaces the topic title completely.
+        custom_title = str(ALL_TEXTS.get(selected_template_key, {}).get("title", "") or "").strip()
+        if custom_title:
+            topic_name = None
 
         try:
             header, link_text, linked_word, result = build_post_result(
