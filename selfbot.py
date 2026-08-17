@@ -36,6 +36,7 @@ TOPICS_FILE = data_path("topics.json")
 LINK_REGISTRY_FILE = data_path("link_registry.json")
 TOPIC_VARIANTS_FILE = data_path("topic_variants.json")
 TEMPLATE_GROUPS_FILE = data_path("template_groups.json")
+QUICK_TEMPLATES_FILE = data_path("quick_templates.json")
 LINK_BRIDGE_KEY_FILE = data_path("link_bridge_key.txt")
 ADMINS_FILE = data_path("admins.json")
 LINK_REGEX = re.compile(r'(https?://\S+|t\.me/\S+)', re.IGNORECASE)
@@ -132,7 +133,7 @@ def get_main_keyboard(user_id: int):
     buttons = [
         ["🎯 آماده‌سازی", "📋 لیست متن‌ها"],
         ["➕ افزودن متن"],
-        ["📁 پست‌های من"],
+        ["📁 پست‌های من", "⚡ پست سریع"],
     ]
     if is_owner(user_id):
         buttons.append(["👮‍♂️ مدیریت ادمین‌ها"])
@@ -175,6 +176,9 @@ LINK_REGISTRY = load_json(LINK_REGISTRY_FILE, {})
 TOPIC_VARIANTS = load_json(TOPIC_VARIANTS_FILE, {})
 # Maps "category|subcategory" -> template keys.
 TEMPLATE_GROUPS = load_json(TEMPLATE_GROUPS_FILE, {})
+# Ordered queue used by «⚡ پست سریع». Copied templates are appended here automatically.
+QUICK_TEMPLATES = load_json(QUICK_TEMPLATES_FILE, [])
+QUICK_TEMPLATES = [k for k in QUICK_TEMPLATES if k in ALL_TEXTS]
 
 ACTIVE_KEY = "p1"
 
@@ -185,6 +189,12 @@ def save_texts():
 
 def save_template_groups():
     save_json(TEMPLATE_GROUPS_FILE, TEMPLATE_GROUPS)
+
+
+def save_quick_templates():
+    global QUICK_TEMPLATES
+    QUICK_TEMPLATES = [k for k in QUICK_TEMPLATES if k in ALL_TEXTS]
+    save_json(QUICK_TEMPLATES_FILE, QUICK_TEMPLATES)
 
 
 def group_key(category, subcategory):
@@ -424,7 +434,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🎯 آماده‌سازی → قالب رو انتخاب کن، بعد با موضوع یا بدون موضوع رو مشخص کن\n"
         "📋 لیست متن‌ها → مدیریت قالب‌ها + متن‌های رندوم\n"
         "➕ افزودن متن → ساخت قالب جدید\n"
-        "📁 پست‌های من → همه پست‌ها\n\n"
+        "📁 پست‌های من → همه پست‌ها\n"
+        "⚡ پست سریع → چندین لینک را یکجا با صف قالب‌ها بساز\n\n"
         "💡 نکته: بعد از انتخاب قالب، می‌تونی پست رو با موضوع یا بدون موضوع بسازی.\n"
         "در حالت بدون موضوع، بعد از لینک مستقیم پست ساخته می‌شه.",
         reply_markup=get_main_keyboard(uid)
@@ -437,7 +448,7 @@ async def backup_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⛔ فقط مالک ربات می‌تونه بکاپ بگیره!")
         return
 
-    files = [ADMINS_FILE, TEXTS_FILE, TOPICS_FILE, POSTS_FILE, LINK_REGISTRY_FILE, TOPIC_VARIANTS_FILE, TEMPLATE_GROUPS_FILE, LINK_BRIDGE_KEY_FILE]
+    files = [ADMINS_FILE, TEXTS_FILE, TOPICS_FILE, POSTS_FILE, LINK_REGISTRY_FILE, TOPIC_VARIANTS_FILE, TEMPLATE_GROUPS_FILE, QUICK_TEMPLATES_FILE, LINK_BRIDGE_KEY_FILE]
     existing_files = [path for path in files if os.path.isfile(path)]
 
     if not existing_files:
@@ -693,6 +704,86 @@ async def admin_list_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("📋 لیست ادمین‌ها:\n\n" + "\n\n".join(lines), reply_markup=ADMIN_MANAGE_KEYBOARD)
 
 # ═══════════════════════════════════════════════════
+async def quick_menu_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    if not has_permission(uid, "ready"):
+        await update.message.reply_text("⛔ اجازه ساخت پست رو نداری!", reply_markup=get_main_keyboard(uid))
+        return
+    global QUICK_TEMPLATES
+    QUICK_TEMPLATES = [k for k in QUICK_TEMPLATES if k in ALL_TEXTS]
+    if not QUICK_TEMPLATES:
+        await update.message.reply_text(
+            "📭 صف پست سریع خالیه.\n\n"
+            "از 📋 لیست متن‌ها یک قالب را کپی کن؛ هر کپی خودکار به صف پست سریع اضافه می‌شود.",
+            reply_markup=get_main_keyboard(uid)
+        )
+        return
+    lines = ["⚡ پست سریع آماده است!\n", "ترتیب قالب‌ها:"]
+    for i, k in enumerate(QUICK_TEMPLATES, 1):
+        lines.append(f"{i}. {k}")
+    lines.append("\n⬇️ حالا هر تعداد لینک را بفرست یا پیام‌های لینک ربات دوم را Forward کن.")
+    lines.append("ربات به همان ترتیب قالب‌ها را روی لینک‌ها اعمال می‌کند و بعد دوباره از قالب اول شروع می‌کند.")
+    context.user_data["quick_mode"] = True
+    await update.message.reply_text("\n".join(lines), reply_markup=MULTI_POST_KEYBOARD)
+
+
+async def process_quick_links(update: Update, context: ContextTypes.DEFAULT_TYPE, urls):
+    uid = update.effective_user.id
+    if not urls:
+        return
+    if not has_permission(uid, "ready"):
+        await update.message.reply_text("⛔ اجازه ساخت پست رو نداری!", reply_markup=get_main_keyboard(uid))
+        return
+
+    global QUICK_TEMPLATES
+    QUICK_TEMPLATES = [k for k in QUICK_TEMPLATES if k in ALL_TEXTS]
+    if not QUICK_TEMPLATES:
+        await update.message.reply_text(
+            "📭 صف پست سریع خالیه. اول قالب‌ها را کپی کن تا وارد صف شوند.",
+            reply_markup=get_main_keyboard(uid)
+        )
+        return
+
+    # Cursor is persisted so a redeploy/restart does not reset the sequence.
+    state = TOPIC_VARIANTS.setdefault("__quick_post_cursor__", {"cursor": 0})
+    cursor = int(state.get("cursor", 0))
+
+    await update.message.reply_text(
+        f"⚡ {len(urls)} لینک دریافت شد.\n"
+        f"🧩 {len(QUICK_TEMPLATES)} قالب در صف فعال است.\n"
+        "⏳ در حال ساخت پست‌ها..."
+    )
+
+    built = 0
+    failed = 0
+    for url in urls:
+        try:
+            key = QUICK_TEMPLATES[cursor % len(QUICK_TEMPLATES)]
+            cursor += 1
+            header, link_text, linked_word, result = build_post_result(url, key, topic_name=None)
+            add_post(uid, header, link_text, linked_word, url, result)
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text=result,
+                parse_mode="HTML",
+                disable_web_page_preview=True
+            )
+            built += 1
+            await asyncio.sleep(0.12)
+        except Exception as exc:
+            failed += 1
+            print(f"[QUICK POST ERROR] {url}: {exc}")
+
+    state["cursor"] = cursor
+    save_json(TOPIC_VARIANTS_FILE, TOPIC_VARIANTS)
+
+    msg = f"✅ {built} پست سریع ساخته شد."
+    if failed:
+        msg += f"\n⚠️ {failed} لینک خطا داشت."
+    await update.message.reply_text(msg, reply_markup=get_main_keyboard(uid))
+
+
+# ═══════════════════════════════════════════════════
 async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global ACTIVE_KEY
     q = update.callback_query
@@ -763,12 +854,57 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 [InlineKeyboardButton("✏️ ویرایش قالب", callback_data=f"edit:{k}"),
                  InlineKeyboardButton("📄 کپی قالب", callback_data=f"copy:{k}")],
                 [InlineKeyboardButton("👀 پیش‌نمایش", callback_data=f"preview:{k}")],
+                [InlineKeyboardButton(
+                    "⚡ حذف از پست سریع" if k in QUICK_TEMPLATES else "⚡ افزودن به پست سریع",
+                    callback_data=f"quick_toggle:{k}"
+                )],
                 [InlineKeyboardButton("➕ افزودن متن رندوم", callback_data=f"rhadd:{k}")],
                 [InlineKeyboardButton("📋 لیست متن‌های رندوم", callback_data=f"rhlist:{k}")],
                 [InlineKeyboardButton(f"{'❌ خاموش' if bq else '✅ روشن'} نقل‌قول", callback_data=f"bq:{k}")],
                 [InlineKeyboardButton("🔙 بازگشت", callback_data="back_list")]
             ]
             await q.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(buttons))
+    elif data.startswith("quick_toggle:"):
+        if not has_permission(uid, "list"):
+            await q.edit_message_text("⛔ اجازه نداری!")
+            return
+        k = data[len("quick_toggle:"):]
+        if k not in ALL_TEXTS:
+            await q.edit_message_text("❌ قالب پیدا نشد!")
+            return
+        if k in QUICK_TEMPLATES:
+            QUICK_TEMPLATES.remove(k)
+            action = "از صف پست سریع حذف شد"
+        else:
+            QUICK_TEMPLATES.append(k)
+            action = "به صف پست سریع اضافه شد"
+        save_quick_templates()
+        await q.answer(f"✅ {action}")
+        # Re-render template menu.
+        t = ALL_TEXTS[k]
+        lw = t.get("linked_word", "")
+        footer = t.get("footer", "")
+        rh = t.get("random_headers", [])
+        bq = t.get("blockquote", False)
+        msg = f"✅ {k} فعال شد!\n\n🔗 {t.get('link_text', '')}"
+        if lw: msg += f"\n🔵 لینک‌شده: {lw}"
+        if footer: msg += f"\n📌 فوتر: {footer}"
+        msg += f"\n💬 نقل‌قول: {'✅ روشن' if bq else '❌ خاموش'}"
+        buttons = [
+            [InlineKeyboardButton("✏️ ویرایش قالب", callback_data=f"edit:{k}"),
+             InlineKeyboardButton("📄 کپی قالب", callback_data=f"copy:{k}")],
+            [InlineKeyboardButton("👀 پیش‌نمایش", callback_data=f"preview:{k}")],
+            [InlineKeyboardButton(
+                "⚡ حذف از پست سریع" if k in QUICK_TEMPLATES else "⚡ افزودن به پست سریع",
+                callback_data=f"quick_toggle:{k}"
+            )],
+            [InlineKeyboardButton("➕ افزودن متن رندوم", callback_data=f"rhadd:{k}")],
+            [InlineKeyboardButton("📋 لیست متن‌های رندوم", callback_data=f"rhlist:{k}")],
+            [InlineKeyboardButton(f"{'❌ خاموش' if bq else '✅ روشن'} نقل‌قول", callback_data=f"bq:{k}")],
+            [InlineKeyboardButton("🔙 بازگشت", callback_data="back_list")]
+        ]
+        await q.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(buttons))
+
     elif data.startswith("edit:"):
         if not has_permission(uid, "list"):
             await q.edit_message_text("⛔ اجازه نداری!")
@@ -1271,11 +1407,16 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not can_use_bot(uid):
         await update.message.reply_text("⛔ دسترسی نداری!")
         return
-    if text in ["تمام", "✅ تمام"] and context.user_data.get("ready_mode"):
-        context.user_data.pop("ready_mode", None)
-        context.user_data.pop("pending_url", None)
-        await update.message.reply_text("✅ آماده‌سازی تمام شد.", reply_markup=get_main_keyboard(uid))
-        return
+    if text in ["تمام", "✅ تمام"]:
+        if context.user_data.get("quick_mode"):
+            context.user_data.clear()
+            await update.message.reply_text("✅ پست سریع تمام شد.", reply_markup=get_main_keyboard(uid))
+            return
+        if context.user_data.get("ready_mode"):
+            context.user_data.pop("ready_mode", None)
+            context.user_data.pop("pending_url", None)
+            await update.message.reply_text("✅ آماده‌سازی تمام شد.", reply_markup=get_main_keyboard(uid))
+            return
     if text in ["لغو", "❌ لغو"]:
         context.user_data.clear()
         await update.message.reply_text("❌ لغو شد.", reply_markup=get_main_keyboard(uid))
@@ -1532,6 +1673,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         import copy as _copy
         ALL_TEXTS[new_name] = _copy.deepcopy(ALL_TEXTS[source])
+        # Every copied template is also appended to the Quick Post queue,
+        # preserving the exact copy order.
+        if new_name not in QUICK_TEMPLATES:
+            QUICK_TEMPLATES.append(new_name)
         # Put the copy immediately after the source in every matching group.
         for g, keys in TEMPLATE_GROUPS.items():
             if source in keys:
@@ -1540,6 +1685,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     keys.insert(pos, new_name)
         save_texts()
         save_template_groups()
+        save_quick_templates()
         context.user_data.clear()
         await update.message.reply_text(
             f"✅ کپی ساخته شد!\n\n📄 اصلی: {source}\n📄 جدید: {new_name}",
@@ -1709,6 +1855,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if text == "📁 پست‌های من":
         await my_posts_cmd(update, context)
         return
+    if text == "⚡ پست سریع":
+        await quick_menu_cmd(update, context)
+        return
+
+    # Quick Post mode accepts one or many URLs, including forwarded messages
+    # from the second bot. No category/topic/template selection is required.
     matches = LINK_REGEX.findall(text)
     if not matches:
         if context.user_data.get("ready_mode"):
@@ -1719,6 +1871,17 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         await update.message.reply_text("❓ لینک ندیدم!", reply_markup=get_main_keyboard(uid))
         return
+    # In Quick Post mode, process every URL from this message.
+    if context.user_data.get("quick_mode"):
+        urls = []
+        for u in matches:
+            nu = normalize_link(u)
+            if nu and nu not in urls:
+                urls.append(nu)
+        if urls:
+            await process_quick_links(update, context, urls)
+        return
+
     url = matches[0]
 
     # =====================================================
