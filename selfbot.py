@@ -794,15 +794,7 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = q.data
 
     if data == "sections_menu":
-        groups = list(TEMPLATE_GROUPS.keys())
-        buttons = [[InlineKeyboardButton("➕ ساخت بخش جدید", callback_data="section_add")]]
-        for g in groups:
-            buttons.append([InlineKeyboardButton("📁 " + section_title(g), callback_data=f"section:{g}")])
-        buttons.append([InlineKeyboardButton("🔙 بازگشت", callback_data="back_main")])
-        await q.edit_message_text(
-            "📁 بخش‌ها\n\nیک بخش را انتخاب کن یا بخش جدید بساز.",
-            reply_markup=InlineKeyboardMarkup(buttons)
-        )
+        await show_sections(update, context)
         return
     uid = update.effective_user.id
 
@@ -1565,32 +1557,45 @@ async def rebuild_admin_perms_inline(q, target_id):
     await q.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(buttons))
 
 # ═══════════════════════════════════════════════════
+
+async def show_sections(update, context):
+    """Render the standalone sections manager from either a message or callback."""
+    groups = list(TEMPLATE_GROUPS.keys())
+    buttons = [[InlineKeyboardButton("➕ ساخت بخش جدید", callback_data="section_add")]]
+    for g in groups:
+        keys = [k for k in TEMPLATE_GROUPS.get(g, []) if k in ALL_TEXTS]
+        enabled = section_enabled(g)
+        buttons.append([
+            InlineKeyboardButton(
+                f"📁 {section_title(g)} — {len(keys)} قالب {'⚡' if enabled else '⛔'}",
+                callback_data=f"section:{g}"
+            )
+        ])
+    buttons.append([InlineKeyboardButton("🔙 بازگشت", callback_data="back_main")])
+
+    markup = InlineKeyboardMarkup(buttons)
+    if getattr(update, "callback_query", None):
+        await update.callback_query.edit_message_text(
+            "📁 بخش‌ها\n\n"
+            "یک بخش را انتخاب کن یا بخش جدید بساز.\n\n"
+            "برای ساخت قالب: وارد بخش شو → «➕ افزودن متن»",
+            reply_markup=markup
+        )
+    else:
+        await update.message.reply_text(
+            "📁 بخش‌ها\n\n"
+            "یک بخش را انتخاب کن یا بخش جدید بساز.\n\n"
+            "برای ساخت قالب: وارد بخش شو → «➕ افزودن متن»",
+            reply_markup=markup
+        )
+
+
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global ACTIVE_KEY
     text = update.message.text or ""
 
     if text == "📁 بخش‌ها":
-        groups = list(TEMPLATE_GROUPS.keys())
-        buttons = [[InlineKeyboardButton("➕ ساخت بخش جدید", callback_data="section_add")]]
-        if groups:
-            for g in groups:
-                keys = [k for k in TEMPLATE_GROUPS.get(g, []) if k in ALL_TEXTS]
-                mark = "⚡" if section_enabled(g) else "⛔"
-                buttons.append([
-                    InlineKeyboardButton(
-                        f"📁 {section_title(g)} — {len(keys)} قالب {mark}",
-                        callback_data=f"section:{g}"
-                    )
-                ])
-        else:
-            buttons.append([InlineKeyboardButton("📭 هنوز بخشی ساخته نشده", callback_data="noop")])
-        buttons.append([InlineKeyboardButton("🔙 بازگشت", callback_data="back_main")])
-        await update.message.reply_text(
-            "📁 بخش‌ها\n\n"
-            "هر بخش مستقل است. برای ساخت قالب، اول وارد همان بخش شو "
-            "و بعد «➕ افزودن متن» را بزن.",
-            reply_markup=InlineKeyboardMarkup(buttons)
-        )
+        await show_sections(update, context)
         return
     state = context.user_data.get("state")
     uid = update.effective_user.id
