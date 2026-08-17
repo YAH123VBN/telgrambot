@@ -585,33 +585,36 @@ async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def list_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     if not can_use_bot(uid):
-        await update.message.reply_text("⛔ دسترسی نداری!")
-        return
+        await update.message.reply_text("⛔ دسترسی نداری!"); return
     if not has_permission(uid, "list"):
-        await update.message.reply_text("⛔ اجازه دیدن لیست متن‌ها رو نداری!", reply_markup=get_main_keyboard(uid))
-        return
-    if not ALL_TEXTS:
-        text = "📭 خالی!"
-        if update.message:
-            await update.message.reply_text(text, reply_markup=get_main_keyboard(uid))
-        else:
-            await update.callback_query.edit_message_text(text, reply_markup=get_main_keyboard(uid))
-        return
-    buttons = []
-    for k in sorted(ALL_TEXTS.keys()):
-        mark = "✅ " if k == ACTIVE_KEY else ""
-        lt = ALL_TEXTS[k].get("link_text", "")[:15]
-        rh_count = len(ALL_TEXTS[k].get("random_headers", []))
-        buttons.append([InlineKeyboardButton(f"{mark}{k} — {lt} (🎲{rh_count})", callback_data=f"use:{k}")])
-    del_row = [InlineKeyboardButton(f"🗑 {k}", callback_data=f"del:{k}") for k in sorted(ALL_TEXTS.keys())]
-    for i in range(0, len(del_row), 3):
-        buttons.append(del_row[i:i+3])
-    text = "📋 انتخاب کن:"
-    markup = InlineKeyboardMarkup(buttons)
-    if update.message:
-        await update.message.reply_text(text, reply_markup=markup)
-    else:
-        await update.callback_query.edit_message_text(text, reply_markup=markup)
+        await update.message.reply_text("⛔ اجازه دیدن لیست متن‌ها رو نداری!", reply_markup=get_main_keyboard(uid)); return
+    grouped=set(); rows=[]
+    for g, vals in sorted(TEMPLATE_GROUPS.items()):
+        valid=[k for k in vals if k in ALL_TEXTS]
+        if not valid: continue
+        grouped.update(valid)
+        cat, sub=g.split("|",1)
+        label=f"📁 {cat}" + (f" → {sub}" if sub else "")
+        rows.append((g,label,len(valid)))
+    ungrouped=[k for k in sorted(ALL_TEXTS) if k not in grouped]
+    buttons=[[InlineKeyboardButton(f"{label} · {n} قالب", callback_data=f"section:{g}")] for g,label,n in rows]
+    if ungrouped: buttons.append([InlineKeyboardButton(f"📦 بدون بخش · {len(ungrouped)} قالب", callback_data="section:__ungrouped__")])
+    buttons += [[InlineKeyboardButton("➕ ساخت بخش جدید", callback_data="section_new")],[InlineKeyboardButton("🏷️ تنظیم عنوان همه", callback_data="bulk_titles")]]
+    text="📋 بخش‌های قالب‌ها\n\nقالب‌ها را داخل بخش‌ها مرتب کن تا لیست شلوغ نشود."
+    if update.message: await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+    else: await update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+
+async def template_section_callback(q, group):
+    keys=[k for k in TEMPLATE_GROUPS.get(group,[]) if k in ALL_TEXTS]
+    cat,sub=group.split("|",1); title=f"📁 {cat}" + (f" → {sub}" if sub else "")
+    buttons=[]
+    for k in keys:
+        first=ALL_TEXTS[k].get("link_text","").splitlines()[0][:28]
+        mark="⚡ " if k in QUICK_TEMPLATES else ""
+        buttons.append([InlineKeyboardButton(f"{mark}{k} — {first}", callback_data=f"use:{k}")])
+    buttons.append([InlineKeyboardButton("🏷️ تنظیم عنوان همه این بخش", callback_data=f"bulk_group:{group}")])
+    buttons.append([InlineKeyboardButton("🔙 لیست بخش‌ها", callback_data="back_list")])
+    await q.edit_message_text(f"{title}\n\n📦 {len(keys)} قالب", reply_markup=InlineKeyboardMarkup(buttons))
 
 async def ready_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
@@ -832,6 +835,69 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await rebuild_admin_perms_inline(q, target_id)
         return
 
+    if data == "section_new":
+        context.user_data.clear(); context.user_data["state"]="new_template_section"
+        await q.edit_message_text("📁 ساخت بخش جدید\n\nاسم بخش را بفرست.\nمثال: وطنی\n\nبرای لغو: لغو"); return
+    if data == "back_list":
+        await list_cmd(update, context); return
+    if data.startswith("section:"):
+        group=data[len("section:"):]
+        if group=="__ungrouped__":
+            grouped={k for vals in TEMPLATE_GROUPS.values() for k in vals}
+            keys=[k for k in sorted(ALL_TEXTS) if k not in grouped]
+            buttons=[[InlineKeyboardButton(k, callback_data=f"use:{k}")] for k in keys]
+            buttons.append([InlineKeyboardButton("🔙 لیست بخش‌ها", callback_data="back_list")])
+            await q.edit_message_text(f"📦 بدون بخش\n\n{len(keys)} قالب", reply_markup=InlineKeyboardMarkup(buttons)); return
+        if group not in TEMPLATE_GROUPS: await q.edit_message_text("❌ بخش پیدا نشد!"); return
+        await template_section_callback(q,group); return
+    if data.startswith("move:"):
+        k=data[5:]
+        buttons=[]
+        for g in sorted(TEMPLATE_GROUPS):
+            cat,sub=g.split("|",1); label=f"📁 {cat}" + (f" → {sub}" if sub else "")
+            buttons.append([InlineKeyboardButton(label, callback_data=f"move_to:{k}:{g}")])
+        buttons.append([InlineKeyboardButton("➕ بخش جدید", callback_data=f"move_new:{k}")])
+        buttons.append([InlineKeyboardButton("🔙 بازگشت", callback_data=f"use:{k}")])
+        await q.edit_message_text(f"📁 انتقال «{k}» به بخش:", reply_markup=InlineKeyboardMarkup(buttons)); return
+    if data.startswith("move_to:"):
+        _,k,g=data.split(":",2)
+        if k not in ALL_TEXTS: await q.edit_message_text("❌ قالب پیدا نشد!"); return
+        for vals in TEMPLATE_GROUPS.values():
+            if k in vals: vals.remove(k)
+        TEMPLATE_GROUPS.setdefault(g,[]).append(k); save_template_groups()
+        await q.edit_message_text(f"✅ «{k}» منتقل شد.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 قالب", callback_data=f"use:{k}")]])); return
+    if data.startswith("move_new:"):
+        k=data[9:]; context.user_data.clear(); context.user_data["state"]="move_new_section"; context.user_data["move_template_key"]=k
+        await q.edit_message_text("📁 اسم بخش جدید را بفرست.\nمثال: وطنی\n\nبرای لغو: لغو"); return
+    if data.startswith("bulk_group:"):
+        g=data[len("bulk_group:"):]; keys=[k for k in TEMPLATE_GROUPS.get(g,[]) if k in ALL_TEXTS]
+        context.user_data.clear(); context.user_data["state"]="bulk_titles"; context.user_data["bulk_title_keys"]=keys
+        await q.edit_message_text("🏷️ تنظیم عنوان همه این بخش\n\nهمه عنوان‌ها را به ترتیب در یک پیام بفرست.\nهر خط = یک قالب.\nاگر ۶ خط بفرستی فقط ۶ قالب اول تغییر می‌کنند؛ بقیه دست‌نخورده می‌مانند.\n\nبرای لغو: لغو"); return
+    if data == "bulk_titles":
+        if not has_permission(uid, "list"):
+            await q.edit_message_text("⛔ اجازه نداری!")
+            return
+        keys = sorted(ALL_TEXTS.keys())
+        if not keys:
+            await q.edit_message_text("📭 هیچ قالبی وجود ندارد.")
+            return
+        context.user_data.clear()
+        context.user_data["state"] = "bulk_titles"
+        context.user_data["bulk_title_keys"] = keys
+        await q.edit_message_text(
+            "🏷️ تنظیم عنوان همه\n\n"
+            "عنوان‌های جدید همه قالب‌ها را به ترتیب در یک پیام بفرست.\n\n"
+            "هر خط = عنوان یک قالب.\n"
+            "اگر ۶ خط بفرستی، فقط عنوان ۶ قالب اول تغییر می‌کند و بقیه دقیقاً دست‌نخورده می‌مانند.\n\n"
+            "مثال:\n"
+            "عنوان اول\n"
+            "عنوان دوم\n"
+            "عنوان سوم\n"
+            "...\n\n"
+            "برای لغو: لغو"
+        )
+        return
+
     if data.startswith("use:"):
         if not has_permission(uid, "list"):
             await q.edit_message_text("⛔ اجازه نداری!")
@@ -854,6 +920,7 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 [InlineKeyboardButton("✏️ ویرایش قالب", callback_data=f"edit:{k}"),
                  InlineKeyboardButton("📄 کپی قالب", callback_data=f"copy:{k}")],
                 [InlineKeyboardButton("👀 پیش‌نمایش", callback_data=f"preview:{k}")],
+                [InlineKeyboardButton("📁 انتقال به بخش", callback_data=f"move:{k}")],
                 [InlineKeyboardButton(
                     "⚡ حذف از پست سریع" if k in QUICK_TEMPLATES else "⚡ افزودن به پست سریع",
                     callback_data=f"quick_toggle:{k}"
@@ -1622,6 +1689,56 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🔗 متن: {link_text}\n\n"
             "از این به بعد اگر لینک با همین نوع/مدل از ربات دوم بیاید، "
             "ربات اصلی فقط از همین گروه قالب انتخاب می‌کند.",
+            reply_markup=get_main_keyboard(uid)
+        )
+        return
+
+    if state == "new_template_section":
+        if text in {"لغو","❌ لغو"}: context.user_data.clear(); await update.message.reply_text("❌ لغو شد.",reply_markup=get_main_keyboard(uid)); return
+        name=text.strip(); g=group_key(name,"")
+        if not name or g in TEMPLATE_GROUPS: await update.message.reply_text("❌ اسم بخش خالی است یا قبلاً وجود دارد."); return
+        TEMPLATE_GROUPS[g]=[]; save_template_groups(); context.user_data.clear(); await update.message.reply_text(f"✅ بخش «{name}» ساخته شد.",reply_markup=get_main_keyboard(uid)); return
+    if state == "move_new_section":
+        if text in {"لغو","❌ لغو"}: context.user_data.clear(); await update.message.reply_text("❌ لغو شد.",reply_markup=get_main_keyboard(uid)); return
+        name=text.strip(); k=context.user_data.get("move_template_key"); g=group_key(name,"")
+        if not name or not k or k not in ALL_TEXTS: context.user_data.clear(); await update.message.reply_text("❌ اطلاعات ناقص است.",reply_markup=get_main_keyboard(uid)); return
+        for vals in TEMPLATE_GROUPS.values():
+            if k in vals: vals.remove(k)
+        TEMPLATE_GROUPS.setdefault(g,[]).append(k); save_template_groups(); context.user_data.clear(); await update.message.reply_text(f"✅ «{k}» به «{name}» منتقل شد.",reply_markup=get_main_keyboard(uid)); return
+    if state == "bulk_titles":
+        if not has_permission(uid, "list"):
+            context.user_data.clear()
+            await update.message.reply_text("⛔ اجازه نداری!", reply_markup=get_main_keyboard(uid))
+            return
+        if text in {"لغو", "❌ لغو"}:
+            context.user_data.clear()
+            await update.message.reply_text("❌ لغو شد.", reply_markup=get_main_keyboard(uid))
+            return
+
+        keys = context.user_data.get("bulk_title_keys") or sorted(ALL_TEXTS.keys())
+        titles = [line.strip() for line in text.splitlines() if line.strip()]
+        if not titles:
+            await update.message.reply_text("❌ حداقل یک عنوان بفرست.")
+            return
+
+        count = min(len(titles), len(keys))
+        changed = []
+        for i in range(count):
+            k = keys[i]
+            new_title = titles[i]
+            current = ALL_TEXTS[k].get("link_text", "")
+            lines = current.splitlines()
+            body = "\n".join(lines[1:]).lstrip("\n") if len(lines) > 1 else ""
+            ALL_TEXTS[k]["link_text"] = new_title + ("\n\n" + body if body else "")
+            changed.append(k)
+
+        save_texts()
+        untouched = max(0, len(keys) - count)
+        context.user_data.clear()
+        await update.message.reply_text(
+            f"✅ عنوان {count} قالب تغییر کرد.\n\n"
+            + "\n".join([f"{i+1}. {k} → {titles[i]}" for i, k in enumerate(changed)])
+            + (f"\n\n🔒 {untouched} قالب بعدی دست‌نخورده ماند." if untouched else ""),
             reply_markup=get_main_keyboard(uid)
         )
         return
