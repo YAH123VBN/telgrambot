@@ -418,7 +418,14 @@ def build_post_result(url, template_key, topic_name=None):
             first = nonempty[0].strip()
             if first in old_candidates or first == header:
                 pos = link_text.find(first)
-                link_text = link_text[pos + len(first):].lstrip("\r\n")
+                rest = link_text[pos + len(first):]
+                # Drop only the single line-ending after that old line; keep
+                # any blank line after it exactly as the template stored it.
+                if rest.startswith("\r\n"):
+                    rest = rest[2:]
+                elif rest.startswith("\n"):
+                    rest = rest[1:]
+                link_text = rest
 
     if linked_word and linked_word not in link_text:
         linked_word = ""
@@ -441,6 +448,9 @@ def build_post_result(url, template_key, topic_name=None):
     if footer:
         parts_list.append(escape(footer))
 
+    # Never force extra blank lines here: each template's own link_text/footer
+    # already carries whatever spacing it needs. Join with a single newline
+    # and let that stored spacing (or lack of it) come through untouched.
     result = preserve_spaces("\n".join(parts_list))
     return header, link_text, linked_word, result
 
@@ -2032,21 +2042,22 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 continue
             old_title = str(item.get("title", "") or "").strip()
 
-            # Keep the "Download pack" body intact: only strip a stale title
-            # line that may have been embedded inside link_text before.
+            # Keep the body exactly as the template author formatted it
+            # (including any blank-line spacing). Only remove the exact old
+            # title line if it was ever embedded as the first line of
+            # link_text — never touch surrounding blank lines.
             link_text = str(item.get("link_text", "") or "")
             linked_word = str(item.get("linked_word", "") or "")
             if link_text and linked_word and linked_word in link_text:
                 item["link_text"] = link_text[link_text.find(linked_word):]
             elif old_title and link_text:
-                chunks = link_text.splitlines()
-                while chunks and not chunks[0].strip():
-                    chunks.pop(0)
-                if chunks and chunks[0].strip() == old_title:
-                    chunks.pop(0)
-                    while chunks and not chunks[0].strip():
-                        chunks.pop(0)
-                    item["link_text"] = "\n".join(chunks)
+                lines = link_text.splitlines(keepends=True)
+                idx = 0
+                while idx < len(lines) and not lines[idx].strip():
+                    idx += 1
+                if idx < len(lines) and lines[idx].strip() == old_title:
+                    del lines[idx]
+                    item["link_text"] = "".join(lines)
 
             item["title"] = new_title
             item["header"] = ""
