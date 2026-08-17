@@ -399,17 +399,23 @@ def build_post_result(url, template_key, topic_name=None):
     footer = base.get("footer", "")
     bq = base.get("blockquote", False)
 
-    if topic_name is not None:
+    # A manually assigned template title must be the final title.
+    # This is especially important when a topic is also selected: the topic
+    # header must not remain above/beside the new title, otherwise the old
+    # topic text and the new title can both appear in the generated post.
+    fixed_title = str(base.get("title", "") or "").strip()
+
+    if fixed_title:
+        header = fixed_title
+        if topic_name is not None and "\n" in link_text:
+            link_text = link_text.split("\n", 1)[1].lstrip("\n")
+    elif topic_name is not None:
         header = choose_topic_header(topic_name)
         if "\n" in link_text:
             link_text = link_text.split("\n", 1)[1].lstrip("\n")
     else:
-        fixed_title = base.get("title", "")
-        if fixed_title:
-            header = fixed_title
-        else:
-            rh = base.get("random_headers", [])
-            header = random.choice(rh) if rh else ""
+        rh = base.get("random_headers", [])
+        header = random.choice(rh) if rh else ""
 
     if linked_word and linked_word not in link_text:
         linked_word = ""
