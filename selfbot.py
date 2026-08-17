@@ -1147,14 +1147,9 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.edit_message_text("❌ قالب پیدا نشد!")
             return
         context.user_data.clear()
-        context.user_data["state"] = "copy_template_name"
+        context.user_data["state"] = "copy_template_count"
         context.user_data["copy_template_key"] = k
-        await q.edit_message_text(
-            f"📄 کپی از «{k}»\n\n"
-            "اسم قالب جدید را بفرست.\n"
-            "مثلاً: v2 یا وطنی-جدید\n\n"
-            "برای لغو: لغو"
-        )
+        await q.edit_message_text(f"📄 کپی از «{k}»\n\n🔢 چند کپی می‌خواهی؟\nمثلاً: 50\n\nبرای لغو: لغو")
     elif data.startswith("preview:"):
         if not has_permission(uid, "list"):
             await q.edit_message_text("⛔ اجازه نداری!")
@@ -1993,37 +1988,61 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    if state == "copy_template_name":
+    if state == "copy_template_count":
         if not has_permission(uid, "list"):
-            context.user_data.clear()
-            await update.message.reply_text("⛔ اجازه نداری!", reply_markup=get_main_keyboard(uid))
-            return
+            context.user_data.clear(); await update.message.reply_text("⛔ اجازه نداری!", reply_markup=get_main_keyboard(uid)); return
         if text in {"لغو", "❌ لغو"}:
-            context.user_data.clear()
-            await update.message.reply_text("❌ لغو شد.", reply_markup=get_main_keyboard(uid))
-            return
-        new_name = text.strip()
-        source = context.user_data.get("copy_template_key")
-        if not new_name or new_name in ALL_TEXTS:
-            await update.message.reply_text("❌ این اسم قبلاً وجود دارد. یک اسم دیگر بفرست.")
-            return
-        if not source or source not in ALL_TEXTS:
-            context.user_data.clear()
-            await update.message.reply_text("❌ قالب اصلی پیدا نشد.", reply_markup=get_main_keyboard(uid))
-            return
+            context.user_data.clear(); await update.message.reply_text("❌ لغو شد.", reply_markup=get_main_keyboard(uid)); return
+        raw_count = text.strip().translate(str.maketrans("۰۱۲۳۴۵۶۷۸۹", "0123456789"))
+        if not raw_count.isdigit():
+            await update.message.reply_text("❌ فقط تعداد را به عدد بفرست. مثال: 50"); return
+        count = int(raw_count)
+        if not 1 <= count <= 1000:
+            await update.message.reply_text("❌ تعداد باید بین 1 تا 1000 باشد."); return
+        context.user_data["copy_template_count"] = count
+        context.user_data["state"] = "copy_template_prefix"
+        await update.message.reply_text(f"✅ تعداد {count} کپی ثبت شد.\n\n🏷 اسم پایه را بفرست.\nمثلاً: test\nنتیجه: test 1 ، test 2 ، ...\n\nبرای لغو: لغو")
+        return
+
+    if state == "copy_template_prefix":
+        if not has_permission(uid, "list"):
+            context.user_data.clear(); await update.message.reply_text("⛔ اجازه نداری!", reply_markup=get_main_keyboard(uid)); return
+        if text in {"لغو", "❌ لغو"}:
+            context.user_data.clear(); await update.message.reply_text("❌ لغو شد.", reply_markup=get_main_keyboard(uid)); return
+        prefix = text.strip(); source = context.user_data.get("copy_template_key"); count = int(context.user_data.get("copy_template_count", 0))
+        if not prefix or not source or source not in ALL_TEXTS or not count:
+            context.user_data.clear(); await update.message.reply_text("❌ اطلاعات کپی نامعتبر است.", reply_markup=get_main_keyboard(uid)); return
         import copy as _copy
-        ALL_TEXTS[new_name] = _copy.deepcopy(ALL_TEXTS[source])
-        # Put the copy immediately after the source in every matching group.
-        for g, keys in TEMPLATE_GROUPS.items():
-            if source in keys:
-                pos = keys.index(source) + 1
-                if new_name not in keys:
-                    keys.insert(pos, new_name)
+        names = [f"{prefix} {i}" for i in range(1, count + 1)]
+        conflicts = [n for n in names if n in ALL_TEXTS]
+        if conflicts:
+            await update.message.reply_text(
+                "❌ بعضی از نام‌های تولیدشده از قبل وجود دارند.\n"
+                "یک اسم پایه دیگر بفرست."
+            )
+            return
+
+        # Copy the selected template in one fast batch and keep all its data intact.
+        source_copy = _copy.deepcopy(ALL_TEXTS[source])
+        matching_groups = [g for g, keys in TEMPLATE_GROUPS.items() if source in keys]
+
+        for name in names:
+            ALL_TEXTS[name] = _copy.deepcopy(source_copy)
+
+        # Put all generated copies immediately after the original in the same section.
+        for g in matching_groups:
+            keys = TEMPLATE_GROUPS[g]
+            pos = keys.index(source) + 1
+            keys[pos:pos] = names
+
         save_texts()
         save_template_groups()
         context.user_data.clear()
+
         await update.message.reply_text(
-            f"✅ کپی ساخته شد!\n\n📄 اصلی: {source}\n📄 جدید: {new_name}",
+            f"⚡ {count} کپی در یک مرحله ساخته شد!\n\n"
+            f"📄 اصلی: {source}\n"
+            f"🏷 نام‌ها: {prefix} 1 تا {prefix} {count}",
             reply_markup=get_main_keyboard(uid)
         )
         return
