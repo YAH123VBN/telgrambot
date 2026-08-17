@@ -132,6 +132,7 @@ def can_use_bot(user_id: int) -> bool:
 def get_main_keyboard(user_id: int):
     buttons = [
         ["🎯 آماده‌سازی", "📋 لیست متن‌ها"],
+        ["📁 نهایی"],
         ["➕ افزودن متن"],
         ["⚡ پست سریع"],
         ["📁 پست‌های من"],
@@ -592,6 +593,46 @@ async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg += f"🎲 متن‌های رندوم ({len(rh)} تا):\n" + "\n".join([f"• {h}" for h in rh[:5]])
     await update.message.reply_text(msg, reply_markup=get_main_keyboard(uid))
 
+async def final_menu_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Final folder manager: open, add, and delete folders."""
+    uid = update.effective_user.id
+    if not can_use_bot(uid):
+        await update.message.reply_text("⛔ دسترسی نداری!")
+        return
+    if not has_permission(uid, "list"):
+        await update.message.reply_text("⛔ اجازه مدیریت پوشه‌ها رو نداری!", reply_markup=get_main_keyboard(uid))
+        return
+    groups = sorted(TEMPLATE_GROUPS.keys())
+    buttons = [
+        [InlineKeyboardButton("➕ افزودن پوشه", callback_data="final_add")],
+        [InlineKeyboardButton("🗑 حذف پوشه", callback_data="final_del_menu")],
+    ]
+    for idx, g in enumerate(groups):
+        buttons.append([InlineKeyboardButton(f"📁 {section_title(g)}", callback_data=f"final_open:{idx}")])
+    await update.message.reply_text(
+        "📁 نهایی\n\n"
+        "از اینجا پوشه‌ها را مدیریت کن.\n"
+        "➕ افزودن پوشه = ساخت پوشه جدید\n"
+        "🗑 حذف پوشه = حذف خود پوشه (قالب‌ها حذف نمی‌شوند)\n\n"
+        f"📦 تعداد پوشه‌ها: {len(groups)}",
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
+
+def _final_groups():
+    return sorted(TEMPLATE_GROUPS.keys())
+
+async def _show_final_menu(q):
+    groups = _final_groups()
+    buttons = [
+        [InlineKeyboardButton("➕ افزودن پوشه", callback_data="final_add")],
+        [InlineKeyboardButton("🗑 حذف پوشه", callback_data="final_del_menu")],
+    ]
+    for idx, g in enumerate(groups):
+        buttons.append([InlineKeyboardButton(f"📁 {section_title(g)}", callback_data=f"final_open:{idx}")])
+    buttons.append([InlineKeyboardButton("🔙 بازگشت", callback_data="final_close")])
+    await q.edit_message_text("📁 نهایی\n\nپوشه موردنظر را انتخاب کن یا پوشه جدید بساز.", reply_markup=InlineKeyboardMarkup(buttons))
+
+
 async def list_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     if not can_use_bot(uid):
@@ -803,6 +844,72 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "noop":
         await q.answer("این بخش هنوز قالبی ندارد.", show_alert=False)
+        return
+
+    if data == "final_close":
+        await q.edit_message_text("📁 منوی نهایی بسته شد.", reply_markup=None)
+        return
+
+    if data == "final_add":
+        if not has_permission(uid, "list"):
+            await q.edit_message_text("⛔ اجازه نداری!")
+            return
+        context.user_data.clear()
+        context.user_data["state"] = "section_add_name"
+        context.user_data["return_to_final"] = True
+        await q.edit_message_text("➕ افزودن پوشه\n\nاسم پوشه را بفرست.\nمثلاً: وطنی\n\nبرای لغو: لغو")
+        return
+
+    if data == "final_del_menu":
+        if not has_permission(uid, "list"):
+            await q.edit_message_text("⛔ اجازه نداری!")
+            return
+        groups = _final_groups()
+        if not groups:
+            await q.edit_message_text("📭 هنوز هیچ پوشه‌ای ساخته نشده.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("➕ افزودن پوشه", callback_data="final_add")],[InlineKeyboardButton("🔙 بازگشت", callback_data="final_close")]]))
+            return
+        buttons = [[InlineKeyboardButton(f"🗑 {section_title(g)}", callback_data=f"final_del:{idx}")] for idx, g in enumerate(groups)]
+        buttons.append([InlineKeyboardButton("🔙 بازگشت", callback_data="final_close")])
+        await q.edit_message_text("🗑 حذف پوشه\n\nپوشه‌ای را که می‌خواهی حذف شود انتخاب کن:", reply_markup=InlineKeyboardMarkup(buttons))
+        return
+
+    if data.startswith("final_open:"):
+        if not has_permission(uid, "list"):
+            await q.edit_message_text("⛔ اجازه نداری!")
+            return
+        try:
+            idx = int(data.split(":", 1)[1]); g = _final_groups()[idx]
+        except (ValueError, IndexError):
+            await q.edit_message_text("❌ این پوشه پیدا نشد."); return
+        await show_section(q, g)
+        return
+
+    if data.startswith("final_del:"):
+        if not has_permission(uid, "list"):
+            await q.edit_message_text("⛔ اجازه نداری!"); return
+        try:
+            idx = int(data.split(":", 1)[1]); g = _final_groups()[idx]
+        except (ValueError, IndexError):
+            await q.edit_message_text("❌ این پوشه پیدا نشد."); return
+        context.user_data["final_delete_group"] = g
+        await q.edit_message_text(f"⚠️ حذف پوشه «{section_title(g)}»؟\n\nخود قالب‌ها حذف نمی‌شوند و فقط پوشه و ارتباط قالب‌ها با آن حذف می‌شود.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ بله، حذف کن", callback_data="final_del_yes")],[InlineKeyboardButton("❌ لغو", callback_data="final_del_menu")]]))
+        return
+
+    if data == "final_del_yes":
+        if not has_permission(uid, "list"):
+            await q.edit_message_text("⛔ اجازه نداری!"); return
+        g = context.user_data.pop("final_delete_group", None)
+        if not g or g not in TEMPLATE_GROUPS:
+            await q.edit_message_text("❌ این پوشه دیگر وجود ندارد."); return
+        del TEMPLATE_GROUPS[g]; SECTION_SETTINGS.pop(g, None)
+        save_template_groups(); save_section_settings()
+        await q.edit_message_text(f"✅ پوشه «{section_title(g)}» حذف شد.\nقالب‌های داخل آن حذف نشدند و به «بدون بخش» منتقل شدند.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📁 برگشت به نهایی", callback_data="final_back")]]))
+        return
+
+    if data == "final_back":
+        if not has_permission(uid, "list"):
+            await q.edit_message_text("⛔ اجازه نداری!"); return
+        await _show_final_menu(q)
         return
 
     if data.startswith("quickselect:"):
@@ -1948,15 +2055,25 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if g in TEMPLATE_GROUPS:
             await update.message.reply_text("⚠️ این بخش از قبل وجود دارد. اسم دیگری بفرست."); return
         TEMPLATE_GROUPS[g]=[]; SECTION_SETTINGS[g]={"quick_enabled":False}; save_template_groups(); save_section_settings()
+        return_to_final = bool(context.user_data.get("return_to_final"))
         context.user_data.clear()
-        await update.message.reply_text(
-            f"✅ بخش «{name}» ساخته شد.\n\n"
-            "حالا می‌تونی مستقیم داخل همین بخش متن/قالب اضافه کنی.",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("📁 ورود به بخش", callback_data=f"section:{g}")],
-                [InlineKeyboardButton("📋 لیست بخش‌ها", callback_data="back_list")]
-            ])
-        )
+        if return_to_final:
+            await update.message.reply_text(
+                f"✅ پوشه «{name}» ساخته شد.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("📁 ورود به پوشه", callback_data=f"section:{g}")],
+                    [InlineKeyboardButton("📁 برگشت به نهایی", callback_data="final_back")]
+                ])
+            )
+        else:
+            await update.message.reply_text(
+                f"✅ بخش «{name}» ساخته شد.\n\n"
+                "حالا می‌تونی مستقیم داخل همین بخش متن/قالب اضافه کنی.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("📁 ورود به بخش", callback_data=f"section:{g}")],
+                    [InlineKeyboardButton("📋 لیست بخش‌ها", callback_data="back_list")]
+                ])
+            )
         return
 
     if state == "waiting_random_header":
@@ -2122,6 +2239,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "برای لغو بنویس: لغو"
         )
         return
+    if text == "📁 نهایی":
+        await final_menu_cmd(update, context)
+        return
+
     if text == "📁 پست‌های من":
         await my_posts_cmd(update, context)
         return
