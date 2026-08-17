@@ -950,7 +950,12 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["titles_keys"] = keys
         msg = (
             f"🏷️ تنظیم عنوان همه — {section_title(g)}\n\n"
-            "یک عنوان بفرست؛ همین یک عنوان جای عنوان فعلی همه‌ی قالب‌های این بخش می‌شود.\n"
+            "عنوان‌های جدید را به ترتیب در یک پیام بفرست، هر خط = عنوان یک قالب.\n"
+            "لازم نیست برای همه‌ی قالب‌ها بنویسی؛ هر چند خط بفرستی، فقط همون‌قدر قالب اول عوض می‌شن، بقیه دست‌نخورده می‌مونن.\n\n"
+            "مثال:\n"
+            "سیاه\n"
+            "گلی\n"
+            "فلان\n\n"
             f"📦 این بخش {len(keys)} قالب دارد.\n\n"
             "برای لغو: لغو"
         )
@@ -2015,11 +2020,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data.clear(); await update.message.reply_text("❌ لغو شد.", reply_markup=get_main_keyboard(uid)); return
         g = context.user_data.get("titles_group")
         keys = context.user_data.get("titles_keys", [])
-        new_title = text.strip()
-        for key in keys:
+        titles = [line.strip() for line in text.splitlines() if line.strip()]
+        changed = min(len(titles), len(keys))
+        for i in range(changed):
+            key = keys[i]
             item = ALL_TEXTS.get(key)
             if not item:
                 continue
+            new_title = titles[i]
 
             # A template's body (link_text) may or may not have its own
             # leading title-like line. Detect that shape directly instead of
@@ -2045,7 +2053,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             item["random_headers"] = []
         save_texts(); context.user_data.clear()
         await update.message.reply_text(
-            f"✅ عنوان همه‌ی {len(keys)} قالب این بخش یکسان شد.",
+            f"✅ عنوان {changed} قالب تغییر کرد.\n📌 بقیه‌ی قالب‌های این بخش دست‌نخورده ماندند.",
             reply_markup=get_main_keyboard(uid)
         )
         return
