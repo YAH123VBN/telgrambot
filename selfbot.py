@@ -403,29 +403,9 @@ def build_post_result(url, template_key, topic_name=None):
     # topic_name, header, random_headers, etc. are never used as a title.
     header = str(base.get("title", "") or "").strip()
 
-    # If an old title was accidentally saved inside link_text, strip everything
-    # before the real linked/download text. This keeps both Download pack lines.
-    if header and linked_word and linked_word in link_text:
-        link_text = link_text[link_text.find(linked_word):]
-    elif header and "\n" in link_text:
-        # Only fall back to dropping a leading line when it is clearly an old
-        # embedded title. Do not touch a normal one-line link text.
-        lines = link_text.splitlines()
-        nonempty = [x for x in lines if x.strip()]
-        if len(nonempty) >= 2:
-            old_candidates = {str(base.get("header", "") or "").strip()}
-            old_candidates.update(str(x).strip() for x in base.get("random_headers", []) or [])
-            first = nonempty[0].strip()
-            if first in old_candidates or first == header:
-                pos = link_text.find(first)
-                rest = link_text[pos + len(first):]
-                # Drop only the single line-ending after that old line; keep
-                # any blank line after it exactly as the template stored it.
-                if rest.startswith("\r\n"):
-                    rest = rest[2:]
-                elif rest.startswith("\n"):
-                    rest = rest[1:]
-                link_text = rest
+    # link_text is used exactly as stored — "تنظیم عنوان همه" already keeps
+    # it clean (no leftover title line, no lost blank-line spacing) at the
+    # moment the title is set, so nothing here should second-guess it.
 
     if linked_word and linked_word not in link_text:
         linked_word = ""
@@ -2040,24 +2020,25 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             item = ALL_TEXTS.get(key)
             if not item:
                 continue
-            old_title = str(item.get("title", "") or "").strip()
 
-            # Keep the body exactly as the template author formatted it
-            # (including any blank-line spacing). Only remove the exact old
-            # title line if it was ever embedded as the first line of
-            # link_text — never touch surrounding blank lines.
+            # A template's body (link_text) may or may not have its own
+            # leading title-like line. Detect that shape directly instead of
+            # guessing from linked_word or a previously-stored title — that
+            # old approach deleted real content any time the linked phrase
+            # happened to appear in the body, even with no old title at all.
+            #
+            # Shape 1: "TitleLine\n\nRest of the body..." — the first line
+            # is non-blank and is immediately followed by a blank line. That
+            # first line is acting as the title; drop only that one line,
+            # keeping the blank line (and everything else) exactly as-is.
+            # Shape 2: anything else — no separable title line exists in the
+            # body (the title, if any, lives only in the "title" field), so
+            # link_text is left completely untouched.
             link_text = str(item.get("link_text", "") or "")
-            linked_word = str(item.get("linked_word", "") or "")
-            if link_text and linked_word and linked_word in link_text:
-                item["link_text"] = link_text[link_text.find(linked_word):]
-            elif old_title and link_text:
-                lines = link_text.splitlines(keepends=True)
-                idx = 0
-                while idx < len(lines) and not lines[idx].strip():
-                    idx += 1
-                if idx < len(lines) and lines[idx].strip() == old_title:
-                    del lines[idx]
-                    item["link_text"] = "".join(lines)
+            lines = link_text.splitlines(keepends=True)
+            if len(lines) >= 2 and lines[0].strip() and not lines[1].strip():
+                del lines[0]
+                item["link_text"] = "".join(lines)
 
             item["title"] = new_title
             item["header"] = ""
