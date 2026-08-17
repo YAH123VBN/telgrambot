@@ -140,7 +140,6 @@ def get_main_keyboard(user_id: int):
         buttons.append(["👮‍♂️ مدیریت ادمین‌ها"])
     return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
 
-
 MULTI_POST_KEYBOARD = ReplyKeyboardMarkup(
     [["✅ تمام", "❌ لغو"]],
     resize_keyboard=True
@@ -444,8 +443,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 سلام!\n\n"
         "🎯 آماده‌سازی → قالب رو انتخاب کن، بعد با موضوع یا بدون موضوع رو مشخص کن\n"
-        "📋 لیست متن‌ها → مدیریت قالب‌ها + متن‌های رندوم\n"        "➕ افزودن متن → ساخت قالب جدید\n"
-        
+        "📋 لیست متن‌ها → مدیریت قالب‌ها + متن‌های رندوم\n"
+        "➕ افزودن متن → ساخت قالب جدید\n"
         "📁 پست‌های من → همه پست‌ها\n\n"
         "💡 نکته: بعد از انتخاب قالب، می‌تونی پست رو با موضوع یا بدون موضوع بسازی.\n"
         "در حالت بدون موضوع، بعد از لینک مستقیم پست ساخته می‌شه.",
@@ -622,7 +621,7 @@ async def list_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📁 هر بخش قالب‌های خودش را دارد.\n"
         "⚡ = فعال برای پست سریع\n"
         "⛔ = غیرفعال برای پست سریع\n\n"
-        "یک بخش را انتخاب کن، بخش جدید بساز، یا قالب‌های داخل بخش را مدیریت کن."
+        "یک بخش را انتخاب کن یا بخش جدید بساز."
     )
     if update.message:
         await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(buttons))
@@ -750,72 +749,30 @@ async def admin_list_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ═══════════════════════════════════════════════════
 async def show_section(q, g):
     if g == "__ungrouped__":
-        keys = [
-            k for k in sorted(ALL_TEXTS)
-            if not any(k in vals for vals in TEMPLATE_GROUPS.values())
-        ]
+        keys = [k for k in sorted(ALL_TEXTS) if not any(k in vals for vals in TEMPLATE_GROUPS.values())]
         title = "📦 بدون بخش"
+        enabled = False
     else:
-        keys = [
-            k for k in TEMPLATE_GROUPS.get(g, [])
-            if k in ALL_TEXTS
-        ]
+        keys = [k for k in TEMPLATE_GROUPS.get(g, []) if k in ALL_TEXTS]
         title = "📁 " + section_title(g)
-
-    buttons = []
-
+        enabled = section_enabled(g)
+    buttons=[]
+    buttons.append([InlineKeyboardButton("🏷️ تنظیم عنوان همه", callback_data=f"titles:{g}")])
+    if g != "__ungrouped__" and not keys:
+        buttons.append([InlineKeyboardButton("📭 این بخش فعلاً خالی است", callback_data="noop")])
     if g != "__ungrouped__":
-        buttons.append([
-            InlineKeyboardButton(
-                "➕ افزودن متن",
-                callback_data=f"section_add_text:{g}"
-            )
-        ])
-
-    for k in keys:
-        # One clean button per template. Clicking it opens:
-        # edit / copy / delete / other template actions.
-        buttons.append([
-            InlineKeyboardButton(
-                f"📝 {k}",
-                callback_data=f"use:{k}"
-            )
-        ])
-
+        buttons.append([InlineKeyboardButton(f"{'⛔ خاموش کردن' if enabled else '⚡ روشن کردن'} پست سریع این بخش", callback_data=f"quicktoggle:{g}")])
     if g != "__ungrouped__":
-        buttons.append([
-            InlineKeyboardButton(
-                "🏷️ تنظیم عنوان‌ها",
-                callback_data=f"titles:{g}"
-            )
-        ])
-        buttons.append([
-            InlineKeyboardButton(
-                f"{'⛔ خاموش کردن' if section_enabled(g) else '⚡ روشن کردن'} پست سریع",
-                callback_data=f"quicktoggle:{g}"
-            )
-        ])
-        buttons.append([
-            InlineKeyboardButton(
-                "🗑 حذف بخش",
-                callback_data=f"section_del:{g}"
-            )
-        ])
-
-    if not keys:
-        empty = "\n\n📭 این بخش هنوز قالبی ندارد."
+        buttons.append([InlineKeyboardButton("➕ افزودن متن به این بخش", callback_data=f"section_add_text:{g}")])
+        buttons.append([InlineKeyboardButton("📦 افزودن قالب موجود به این بخش", callback_data=f"section_add_template:{g}")])
     else:
-        empty = f"\n\n📦 {len(keys)} قالب"
-
-    buttons.append([
-        InlineKeyboardButton("🔙 بخش‌ها", callback_data="sections_menu")
-    ])
-
-    await q.edit_message_text(
-        title + empty,
-        reply_markup=InlineKeyboardMarkup(buttons)
-    )
-
+        buttons.append([InlineKeyboardButton("➕ افزودن متن", callback_data="tmpl_add")])
+    for k in keys:
+        buttons.append([InlineKeyboardButton(f"📝 {k}", callback_data=f"use:{k}")])
+        buttons.append([InlineKeyboardButton(f"🗑 حذف {k}", callback_data=f"del:{k}")])
+    buttons.append([InlineKeyboardButton("🗑 حذف بخش", callback_data=f"section_del:{g}")]) if g != "__ungrouped__" else None
+    buttons.append([InlineKeyboardButton("🔙 لیست بخش‌ها", callback_data="back_list")])
+    await q.edit_message_text(title + f"\n\n📦 {len(keys)} قالب", reply_markup=InlineKeyboardMarkup(buttons))
 
 async def titles_all_start(q, context, g):
     keys = [k for k in TEMPLATE_GROUPS.get(g, []) if k in ALL_TEXTS]
@@ -838,10 +795,6 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     data = q.data
-
-    if data == "sections_menu":
-        await list_cmd(update, context)
-        return
     uid = update.effective_user.id
 
     if data == "quick_close":
@@ -881,7 +834,7 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         context.user_data.clear()
         context.user_data["state"] = "section_add_name"
-        await q.edit_message_text("📁 بخش‌ها\n\nاسم بخش را بفرست.\nمثلاً: وطنی\n\nبرای لغو: لغو")
+        await q.edit_message_text("📁 ساخت بخش جدید\n\nاسم بخش را بفرست.\nمثلاً: وطنی\n\nبرای لغو: لغو")
         return
 
     if data.startswith("section:"):
@@ -940,7 +893,7 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             save_template_groups()
         SECTION_SETTINGS.pop(g,None); save_section_settings()
         context.user_data.clear()
-        await q.edit_message_text("✅ بخش حذف شد. قالب‌ها به «بدون بخش» منتقل شدند.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 بخش‌ها", callback_data="sections_menu")]]))
+        await q.edit_message_text("✅ بخش حذف شد. قالب‌ها به «بدون بخش» منتقل شدند.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 لیست بخش‌ها", callback_data="back_list")]]))
         return
 
     if data.startswith("section_add_text:"):
@@ -1056,7 +1009,7 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 [InlineKeyboardButton("➕ افزودن متن رندوم", callback_data=f"rhadd:{k}")],
                 [InlineKeyboardButton("📋 لیست متن‌های رندوم", callback_data=f"rhlist:{k}")],
                 [InlineKeyboardButton(f"{'❌ خاموش' if bq else '✅ روشن'} نقل‌قول", callback_data=f"bq:{k}")],
-                [InlineKeyboardButton("🔙 بازگشت", callback_data="sections_menu")]
+                [InlineKeyboardButton("🔙 بازگشت", callback_data="back_list")]
             ]
             await q.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(buttons))
     elif data.startswith("edit:"):
@@ -1142,7 +1095,7 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 [InlineKeyboardButton("➕ افزودن متن رندوم", callback_data=f"rhadd:{k}")],
                 [InlineKeyboardButton("📋 لیست متن‌های رندوم", callback_data=f"rhlist:{k}")],
                 [InlineKeyboardButton(f"{'❌ خاموش' if bq else '✅ روشن'} نقل‌قول", callback_data=f"bq:{k}")],
-                [InlineKeyboardButton("🔙 بازگشت", callback_data="sections_menu")]
+                [InlineKeyboardButton("🔙 بازگشت", callback_data="back_list")]
             ]
             await q.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(buttons))
     elif data.startswith("ready:"):
@@ -1327,7 +1280,7 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ACTIVE_KEY = next(iter(ALL_TEXTS), "")
         await q.edit_message_text(
             f"🗑️ قالب «{k}» با موفقیت حذف شد.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 بخش‌ها", callback_data="sections_menu")]])
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 لیست بخش‌ها", callback_data="back_list")]])
         )
     elif data.startswith("del:"):
         if not has_permission(uid, "list"):
@@ -1344,14 +1297,9 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             save_texts(); save_template_groups(); save_section_settings()
             if ACTIVE_KEY == k and ALL_TEXTS:
                 ACTIVE_KEY = list(ALL_TEXTS.keys())[0]
-            await q.edit_message_text(f"🗑 قالب «{k}» حذف شد!", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 بخش‌ها", callback_data="sections_menu")]]))
+            await q.edit_message_text(f"🗑 قالب «{k}» حذف شد!", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 لیست بخش‌ها", callback_data="back_list")]]))
     elif data == "back_list":
-        groups = list(TEMPLATE_GROUPS.keys())
-        buttons = [[InlineKeyboardButton("➕ ساخت بخش جدید", callback_data="section_add")]]
-        for g in groups:
-            buttons.append([InlineKeyboardButton(f"📁 {section_title(g)}", callback_data=f"section:{g}")])
-        buttons.append([InlineKeyboardButton("🔙 بازگشت", callback_data="back_main")])
-        await q.edit_message_text("📁 بخش‌ها", reply_markup=InlineKeyboardMarkup(buttons))
+        await list_cmd(update, context)
     elif data.startswith("rhadd:"):
         if not has_permission(uid, "list"):
             await q.edit_message_text("⛔ اجازه نداری!")
@@ -1603,55 +1551,9 @@ async def rebuild_admin_perms_inline(q, target_id):
     await q.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(buttons))
 
 # ═══════════════════════════════════════════════════
-
-async def show_sections(update, context):
-    """Simple standalone sections manager."""
-    uid = update.effective_user.id
-    if not can_use_bot(uid):
-        if getattr(update, "callback_query", None):
-            await update.callback_query.edit_message_text("⛔ دسترسی نداری!")
-        else:
-            await update.message.reply_text("⛔ دسترسی نداری!")
-        return
-
-    buttons = [[
-        InlineKeyboardButton("➕ ساخت بخش جدید", callback_data="section_add")
-    ]]
-
-    for g in sorted(TEMPLATE_GROUPS.keys(), key=lambda x: section_title(x)):
-        count = len([k for k in TEMPLATE_GROUPS.get(g, []) if k in ALL_TEXTS])
-        buttons.append([
-            InlineKeyboardButton(
-                f"📁 {section_title(g)} ({count})",
-                callback_data=f"section:{g}"
-            )
-        ])
-
-    markup = InlineKeyboardMarkup(buttons)
-    msg = (
-        "📁 بخش‌ها\n\n"
-        "بخش موردنظر را انتخاب کن.\n"
-        "یا برای ساخت بخش جدید، دکمه زیر را بزن."
-    )
-
-    if getattr(update, "callback_query", None):
-        await update.callback_query.edit_message_text(msg, reply_markup=markup)
-    else:
-        await update.message.reply_text(msg, reply_markup=markup)
-
-
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global ACTIVE_KEY
     text = update.message.text or ""
-
-    if text == "➕ افزودن متن":
-        await add_text(update, context)
-        return
-
-    if text == "📋 لیست متن‌ها":
-        await list_cmd(update, context)
-        return
-
     state = context.user_data.get("state")
     uid = update.effective_user.id
     if not can_use_bot(uid):
@@ -1872,10 +1774,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.clear()
         await update.message.reply_text(
             f"✅ قالب «{name}» داخل بخش «{section_title(g)}» ساخته شد.\n\n"
-            "📁 برای مدیریت قالب‌های این بخش، از «📁 بخش‌ها» وارد همین بخش شو.",
+            "📁 برای مدیریت قالب‌های این بخش از 📋 لیست متن‌ها وارد همان بخش شو.",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("📁 باز کردن بخش", callback_data=f"section:{g}")],
-                [InlineKeyboardButton("📁 بخش‌ها", callback_data="sections_menu")]
+                [InlineKeyboardButton("📋 لیست بخش‌ها", callback_data="back_list")]
             ])
         )
         return
@@ -2049,10 +1951,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.clear()
         await update.message.reply_text(
             f"✅ بخش «{name}» ساخته شد.\n\n"
-            "حالا وارد همین بخش شو و از «➕ افزودن متن» قالب بساز.",
+            "حالا می‌تونی مستقیم داخل همین بخش متن/قالب اضافه کنی.",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("📁 ورود به بخش", callback_data=f"section:{g}")],
-                [InlineKeyboardButton("📁 بخش‌ها", callback_data="sections_menu")]
+                [InlineKeyboardButton("📋 لیست بخش‌ها", callback_data="back_list")]
             ])
         )
         return
@@ -2198,6 +2100,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if text == "🎯 آماده‌سازی":
         await ready_cmd(update, context)
+        return
+    if text == "📋 لیست متن‌ها":
+        await list_cmd(update, context)
         return
     if text == "⚡ پست سریع":
         await quick_post_cmd(update, context)
