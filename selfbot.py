@@ -807,7 +807,6 @@ async def show_section(q, g):
         title = "📁 " + section_title(g)
         enabled = section_enabled(g)
     buttons=[]
-    buttons.append([InlineKeyboardButton("🏷️ تنظیم تایتل همه", callback_data=f"titles:{g}")])
     if g != "__ungrouped__" and not keys:
         buttons.append([InlineKeyboardButton("📭 این بخش فعلاً خالی است", callback_data="noop")])
     if g != "__ungrouped__":
@@ -823,22 +822,6 @@ async def show_section(q, g):
     buttons.append([InlineKeyboardButton("🗑 حذف بخش", callback_data=f"section_del:{g}")]) if g != "__ungrouped__" else None
     buttons.append([InlineKeyboardButton("🔙 لیست بخش‌ها", callback_data="back_list")])
     await q.edit_message_text(title + f"\n\n📦 {len(keys)} قالب", reply_markup=InlineKeyboardMarkup(buttons))
-
-async def titles_all_start(q, context, g):
-    keys = [k for k in TEMPLATE_GROUPS.get(g, []) if k in ALL_TEXTS]
-    context.user_data.clear()
-    context.user_data["state"] = "titles_all"
-    context.user_data["titles_group"] = g
-    context.user_data["titles_keys"] = keys
-    msg = (
-        f"🏷️ تنظیم تایتل همه — {section_title(g)}\n\n"
-        "عنوان‌های جدید را به ترتیب در یک پیام بفرست.\n"
-        "هر خط = عنوان یک قالب.\n\n"
-        f"📦 این بخش {len(keys)} قالب دارد.\n"
-        "اگر ۶ خط بفرستی فقط عنوان ۶ قالب اول تغییر می‌کند؛ بقیه دست‌نخورده می‌مانند.\n\n"
-        "برای لغو: لغو"
-    )
-    await q.edit_message_text(msg)
 
 async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global ACTIVE_KEY
@@ -958,17 +941,6 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.edit_message_text("⛔ اجازه نداری!")
             return
         await show_section(q, data[8:])
-        return
-
-    if data.startswith("titles:"):
-        if not has_permission(uid, "list"):
-            await q.edit_message_text("⛔ اجازه نداری!")
-            return
-        g = data[7:]
-        if g == "__ungrouped__":
-            await q.edit_message_text("❌ بخش‌بندی نشده‌ها قابل تنظیم عنوان گروهی نیستند. اول قالب‌ها را داخل یک بخش قرار بده.")
-            return
-        await titles_all_start(q, context, g)
         return
 
     if data.startswith("quicktoggle:"):
@@ -2020,45 +1992,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🏷 نام‌ها: {prefix} 1 تا {prefix} {count}",
             reply_markup=get_main_keyboard(uid)
         )
-        return
-
-    if state == "titles_all":
-        if not has_permission(uid, "list"):
-            context.user_data.clear(); await update.message.reply_text("⛔ اجازه نداری!", reply_markup=get_main_keyboard(uid)); return
-        if text in {"لغو", "❌ لغو"}:
-            context.user_data.clear(); await update.message.reply_text("❌ لغو شد.", reply_markup=get_main_keyboard(uid)); return
-        g=context.user_data.get("titles_group")
-        keys=context.user_data.get("titles_keys", [])
-        titles=[line.strip() for line in text.splitlines() if line.strip()]
-        changed=min(len(titles),len(keys))
-        for i in range(changed):
-            key = keys[i]
-            item = ALL_TEXTS[key]
-            new_title = titles[i]
-            old_title = str(item.get("title", "") or "").strip()
-
-            # The title is a TOTAL replacement. The only title source after
-            # this operation is item["title"]. Old title/header/random-header
-            # values are cleared so they can never be rendered as a title.
-            link_text = str(item.get("link_text", "") or "")
-            linked_word = str(item.get("linked_word", "") or "")
-            if link_text and linked_word and linked_word in link_text:
-                item["link_text"] = link_text[link_text.find(linked_word):]
-            elif old_title and link_text:
-                chunks = link_text.splitlines()
-                while chunks and not chunks[0].strip():
-                    chunks.pop(0)
-                if chunks and chunks[0].strip() == old_title:
-                    chunks.pop(0)
-                    while chunks and not chunks[0].strip():
-                        chunks.pop(0)
-                    item["link_text"] = "\n".join(chunks)
-
-            item["title"] = new_title
-            item["header"] = ""
-            item["random_headers"] = []
-        save_texts(); context.user_data.clear()
-        await update.message.reply_text(f"✅ {changed} عنوان تغییر کرد.\n📌 بقیه قالب‌ها دست‌نخورده ماندند.", reply_markup=get_main_keyboard(uid))
         return
 
     if state == "section_add_name":
