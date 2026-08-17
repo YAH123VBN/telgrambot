@@ -756,11 +756,10 @@ async def show_section(q, g):
         keys = [k for k in TEMPLATE_GROUPS.get(g, []) if k in ALL_TEXTS]
         title = "📁 " + section_title(g)
         enabled = section_enabled(g)
-    if not keys:
-        await q.edit_message_text("📭 این بخش خالیه.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 بازگشت", callback_data="back_list")]]))
-        return
     buttons=[]
     buttons.append([InlineKeyboardButton("🏷️ تنظیم عنوان همه", callback_data=f"titles:{g}")])
+    if g != "__ungrouped__" and not keys:
+        buttons.append([InlineKeyboardButton("📭 این بخش فعلاً خالی است", callback_data="noop")])
     if g != "__ungrouped__":
         buttons.append([InlineKeyboardButton(f"{'⛔ خاموش کردن' if enabled else '⚡ روشن کردن'} پست سریع این بخش", callback_data=f"quicktoggle:{g}")])
     if g != "__ungrouped__":
@@ -800,6 +799,10 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "quick_close":
         await q.edit_message_text("⚡ پست سریع بسته شد.", reply_markup=None)
+        return
+
+    if data == "noop":
+        await q.answer("این بخش هنوز قالبی ندارد.", show_alert=False)
         return
 
     if data.startswith("quickselect:"):
