@@ -807,6 +807,8 @@ async def show_section(q, g):
         title = "📁 " + section_title(g)
         enabled = section_enabled(g)
     buttons=[]
+    if g != "__ungrouped__" and keys:
+        buttons.append([InlineKeyboardButton("🏷️ تنظیم عنوان همه", callback_data=f"titles_all:{g}")])
     if g != "__ungrouped__" and not keys:
         buttons.append([InlineKeyboardButton("📭 این بخش فعلاً خالی است", callback_data="noop")])
     if g != "__ungrouped__":
@@ -941,6 +943,28 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.edit_message_text("⛔ اجازه نداری!")
             return
         await show_section(q, data[8:])
+        return
+
+    if data.startswith("titles_all:"):
+        if not has_permission(uid, "list"):
+            await q.edit_message_text("⛔ اجازه نداری!")
+            return
+        g = data[len("titles_all:"):]
+        keys = [k for k in TEMPLATE_GROUPS.get(g, []) if k in ALL_TEXTS]
+        if not keys:
+            await q.edit_message_text("📭 این بخش قالبی ندارد.")
+            return
+        context.user_data.clear()
+        context.user_data["state"] = "titles_all"
+        context.user_data["titles_group"] = g
+        context.user_data["titles_keys"] = keys
+        msg = (
+            f"🏷️ تنظیم عنوان همه — {section_title(g)}\n\n"
+            "یک عنوان بفرست؛ همین یک عنوان جای عنوان فعلی همه‌ی قالب‌های این بخش می‌شود.\n"
+            f"📦 این بخش {len(keys)} قالب دارد.\n\n"
+            "برای لغو: لغو"
+        )
+        await q.edit_message_text(msg)
         return
 
     if data.startswith("quicktoggle:"):
@@ -1990,6 +2014,46 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"⚡ {count} کپی در یک مرحله ساخته شد!\n\n"
             f"📄 اصلی: {source}\n"
             f"🏷 نام‌ها: {prefix} 1 تا {prefix} {count}",
+            reply_markup=get_main_keyboard(uid)
+        )
+        return
+
+    if state == "titles_all":
+        if not has_permission(uid, "list"):
+            context.user_data.clear(); await update.message.reply_text("⛔ اجازه نداری!", reply_markup=get_main_keyboard(uid)); return
+        if text in {"لغو", "❌ لغو"}:
+            context.user_data.clear(); await update.message.reply_text("❌ لغو شد.", reply_markup=get_main_keyboard(uid)); return
+        g = context.user_data.get("titles_group")
+        keys = context.user_data.get("titles_keys", [])
+        new_title = text.strip()
+        for key in keys:
+            item = ALL_TEXTS.get(key)
+            if not item:
+                continue
+            old_title = str(item.get("title", "") or "").strip()
+
+            # Keep the "Download pack" body intact: only strip a stale title
+            # line that may have been embedded inside link_text before.
+            link_text = str(item.get("link_text", "") or "")
+            linked_word = str(item.get("linked_word", "") or "")
+            if link_text and linked_word and linked_word in link_text:
+                item["link_text"] = link_text[link_text.find(linked_word):]
+            elif old_title and link_text:
+                chunks = link_text.splitlines()
+                while chunks and not chunks[0].strip():
+                    chunks.pop(0)
+                if chunks and chunks[0].strip() == old_title:
+                    chunks.pop(0)
+                    while chunks and not chunks[0].strip():
+                        chunks.pop(0)
+                    item["link_text"] = "\n".join(chunks)
+
+            item["title"] = new_title
+            item["header"] = ""
+            item["random_headers"] = []
+        save_texts(); context.user_data.clear()
+        await update.message.reply_text(
+            f"✅ عنوان همه‌ی {len(keys)} قالب این بخش یکسان شد.",
             reply_markup=get_main_keyboard(uid)
         )
         return
