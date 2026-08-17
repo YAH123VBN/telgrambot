@@ -131,8 +131,8 @@ def can_use_bot(user_id: int) -> bool:
 
 def get_main_keyboard(user_id: int):
     buttons = [
-        ["🎯 آماده‌سازی"],
-        ["📁 بخش‌ها"],
+        ["🎯 آماده‌سازی", "📋 لیست متن‌ها"],
+        ["➕ افزودن متن"],
         ["⚡ پست سریع"],
         ["📁 پست‌های من"],
     ]
@@ -444,7 +444,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 سلام!\n\n"
         "🎯 آماده‌سازی → قالب رو انتخاب کن، بعد با موضوع یا بدون موضوع رو مشخص کن\n"
-        "📁 بخش‌ها → ساخت و مدیریت بخش‌ها و قالب‌های هر بخش\n"
+        "📋 لیست متن‌ها → مدیریت قالب‌ها + متن‌های رندوم\n"        "➕ افزودن متن → ساخت قالب جدید\n"
         
         "📁 پست‌های من → همه پست‌ها\n\n"
         "💡 نکته: بعد از انتخاب قالب، می‌تونی پست رو با موضوع یا بدون موضوع بسازی.\n"
@@ -622,7 +622,7 @@ async def list_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📁 هر بخش قالب‌های خودش را دارد.\n"
         "⚡ = فعال برای پست سریع\n"
         "⛔ = غیرفعال برای پست سریع\n\n"
-        "یک بخش را انتخاب کن یا بخش جدید بساز."
+        "یک بخش را انتخاب کن، بخش جدید بساز، یا قالب‌های داخل بخش را مدیریت کن."
     )
     if update.message:
         await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(buttons))
@@ -666,7 +666,7 @@ async def quick_post_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not groups:
         await update.message.reply_text(
             "📭 هیچ بخشی برای پست سریع فعال نیست.\n\n"
-            "از 📁 بخش‌ها وارد بخش شو و ⚡ پست سریع آن بخش را روشن کن.",
+            "از 📋 لیست متن‌ها وارد بخش شو و ⚡ پست سریع آن بخش را روشن کن.",
             reply_markup=get_main_keyboard(uid)
         )
         return
@@ -840,7 +840,7 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = q.data
 
     if data == "sections_menu":
-        await show_sections(update, context)
+        await list_cmd(update, context)
         return
     uid = update.effective_user.id
 
@@ -1644,9 +1644,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global ACTIVE_KEY
     text = update.message.text or ""
 
-    if text == "📁 بخش‌ها":
-        await show_sections(update, context)
+    if text == "➕ افزودن متن":
+        await add_text(update, context)
         return
+
+    if text == "📋 لیست متن‌ها":
+        await list_cmd(update, context)
+        return
+
     state = context.user_data.get("state")
     uid = update.effective_user.id
     if not can_use_bot(uid):
