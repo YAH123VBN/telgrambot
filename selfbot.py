@@ -389,44 +389,36 @@ def get_posts(user_id):
 
 
 def build_post_result(url, template_key, topic_name=None):
-    """Build a post using the selected template, with or without a topic."""
+    """Build a post. The ONLY source of the post title is ALL_TEXTS[key]["title"]."""
     base = ALL_TEXTS.get(template_key, {})
     if not base:
         raise ValueError("قالب پیدا نشد.")
 
-    link_text = base.get("link_text", "download")
-    linked_word = base.get("linked_word", "")
-    footer = base.get("footer", "")
+    link_text = str(base.get("link_text", "download") or "")
+    linked_word = str(base.get("linked_word", "") or "")
+    footer = str(base.get("footer", "") or "")
     bq = base.get("blockquote", False)
 
-    # A manually assigned template title must be the final title.
-    # This is especially important when a topic is also selected: the topic
-    # header must not remain above/beside the new title, otherwise the old
-    # topic text and the new title can both appear in the generated post.
-    fixed_title = str(base.get("title", "") or "").strip()
+    # IMPORTANT: title comes ONLY from the "تنظیم تایتل همه" field.
+    # topic_name, header, random_headers, etc. are never used as a title.
+    header = str(base.get("title", "") or "").strip()
 
-    if fixed_title:
-        header = fixed_title
-        # If a template still contains its previous title inside link_text,
-        # remove that embedded header. Keep the actual link text intact.
-        # Prefer the linked_word as the anchor point; this also handles
-        # templates created from forwarded posts where the old title was
-        # accidentally stored together with the download text.
-        if "\n" in link_text:
-            if linked_word and linked_word in link_text:
-                before, after = link_text.split(linked_word, 1)
-                before_lines = [x.strip() for x in before.splitlines() if x.strip()]
-                if before_lines:
-                    link_text = linked_word + after
-            elif topic_name is not None:
-                link_text = link_text.split("\n", 1)[1].lstrip("\n")
-    elif topic_name is not None:
-        header = choose_topic_header(topic_name)
-        if "\n" in link_text:
-            link_text = link_text.split("\n", 1)[1].lstrip("\n")
-    else:
-        rh = base.get("random_headers", [])
-        header = random.choice(rh) if rh else ""
+    # If an old title was accidentally saved inside link_text, strip everything
+    # before the real linked/download text. This keeps both Download pack lines.
+    if header and linked_word and linked_word in link_text:
+        link_text = link_text[link_text.find(linked_word):]
+    elif header and "\n" in link_text:
+        # Only fall back to dropping a leading line when it is clearly an old
+        # embedded title. Do not touch a normal one-line link text.
+        lines = link_text.splitlines()
+        nonempty = [x for x in lines if x.strip()]
+        if len(nonempty) >= 2:
+            old_candidates = {str(base.get("header", "") or "").strip()}
+            old_candidates.update(str(x).strip() for x in base.get("random_headers", []) or [])
+            first = nonempty[0].strip()
+            if first in old_candidates or first == header:
+                pos = link_text.find(first)
+                link_text = link_text[pos + len(first):].lstrip("\r\n")
 
     if linked_word and linked_word not in link_text:
         linked_word = ""
@@ -815,7 +807,7 @@ async def show_section(q, g):
         title = "📁 " + section_title(g)
         enabled = section_enabled(g)
     buttons=[]
-    buttons.append([InlineKeyboardButton("🏷️ تنظیم عنوان همه", callback_data=f"titles:{g}")])
+    buttons.append([InlineKeyboardButton("🏷️ تنظیم تایتل همه", callback_data=f"titles:{g}")])
     if g != "__ungrouped__" and not keys:
         buttons.append([InlineKeyboardButton("📭 این بخش فعلاً خالی است", callback_data="noop")])
     if g != "__ungrouped__":
@@ -839,7 +831,7 @@ async def titles_all_start(q, context, g):
     context.user_data["titles_group"] = g
     context.user_data["titles_keys"] = keys
     msg = (
-        f"🏷️ تنظیم عنوان همه — {section_title(g)}\n\n"
+        f"🏷️ تنظیم تایتل همه — {section_title(g)}\n\n"
         "عنوان‌های جدید را به ترتیب در یک پیام بفرست.\n"
         "هر خط = عنوان یک قالب.\n\n"
         f"📦 این بخش {len(keys)} قالب دارد.\n"
@@ -1484,43 +1476,9 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await q.edit_message_text("❌ خطا! موضوع پیدا نشد.")
                 return
             topic_name = topic_names[idx]
-            base = ALL_TEXTS.get(ACTIVE_KEY, {})
-
-            # وقتی موضوع انتخاب می‌شود:
-            # 1) متن موضوع، جای متن بالای پست قرار می‌گیرد.
-            # 2) اولین خط link_text که متن قدیمیِ موضوع/عنوان است حذف می‌شود.
-            # 3) بقیه متن لینک و فوتر دقیقاً حفظ می‌شوند.
-            #
-            # اگر link_text فقط یک خط داشته باشد، چیزی حذف نمی‌کنیم
-            # تا «Download pack» و امثال آن از بین نرود.
-            header = choose_topic_header(topic_name)
-            link_text = base.get("link_text", "download")
-            if "\n" in link_text:
-                link_text = link_text.split("\n", 1)[1].lstrip("\n")
-            linked_word = base.get("linked_word", "")
-            if linked_word and linked_word not in link_text:
-                linked_word = ""
-            footer = base.get("footer", "")
-            bq = base.get("blockquote", False)
-            if linked_word and linked_word in link_text:
-                parts = link_text.split(linked_word, 1)
-                link_anchor = f'<a href="{url}">{escape(linked_word)}</a>'
-                if bq:
-                    link_anchor = f"<blockquote>{link_anchor}</blockquote>"
-                link_part = f"{escape(parts[0])}{link_anchor}{escape(parts[1])}"
-            else:
-                link_part = f'<a href="{url}">{escape(link_text)}</a>'
-                if bq:
-                    link_part = f"<blockquote>{link_part}</blockquote>"
-            parts_list = []
-            if header:
-                parts_list.append(f"<b>{escape(header)}</b>")
-            parts_list.append(link_part)
-            if footer:
-                parts_list.append(escape(footer))
-            result = "\n".join(parts_list)
-            result = preserve_spaces(result)
-            add_post(update.effective_user.id, header, link_text, linked_word, url, result)
+            header, link_text, linked_word, result = build_post_result(
+                url, ACTIVE_KEY, topic_name=topic_name
+            )
             try:
                 await q.edit_message_text(result, parse_mode="HTML", disable_web_page_preview=True)
                 await context.bot.send_message(
@@ -2079,10 +2037,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             new_title = titles[i]
             old_title = str(item.get("title", "") or "").strip()
 
-            # The title is a replacement, not an extra line. If an older
-            # title was accidentally stored inside link_text, remove it now.
+            # The title is a TOTAL replacement. The only title source after
+            # this operation is item["title"]. Old title/header/random-header
+            # values are cleared so they can never be rendered as a title.
             link_text = str(item.get("link_text", "") or "")
-            if old_title and link_text:
+            linked_word = str(item.get("linked_word", "") or "")
+            if link_text and linked_word and linked_word in link_text:
+                item["link_text"] = link_text[link_text.find(linked_word):]
+            elif old_title and link_text:
                 chunks = link_text.splitlines()
                 while chunks and not chunks[0].strip():
                     chunks.pop(0)
@@ -2092,11 +2054,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         chunks.pop(0)
                     item["link_text"] = "\n".join(chunks)
 
-            # IMPORTANT: this is a TOTAL replacement of the rendered title.
-            # The new line becomes the only title source for this template.
-            # Do not let an old header/random header/topic survive.
             item["title"] = new_title
-            item["header"] = new_title
+            item["header"] = ""
             item["random_headers"] = []
         save_texts(); context.user_data.clear()
         await update.message.reply_text(f"✅ {changed} عنوان تغییر کرد.\n📌 بقیه قالب‌ها دست‌نخورده ماندند.", reply_markup=get_main_keyboard(uid))
