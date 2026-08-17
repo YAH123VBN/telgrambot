@@ -191,31 +191,39 @@ def group_key(category, subcategory):
     return f"{str(category).strip()}|{str(subcategory).strip()}"
 
 
-def get_group_templates(category, subcategory):
-    key = group_key(category, subcategory)
-    keys = TEMPLATE_GROUPS.get(key, [])
+def get_group_templates(category, subcategory=""):
+    """Return templates for a category. Exact subgroup is supported, but
+    category-only templates are the default so the second bot can stay simple."""
+    category = str(category or "").strip()
+    subcategory = str(subcategory or "").strip()
+    exact = TEMPLATE_GROUPS.get(group_key(category, subcategory), []) if subcategory else []
+    category_only = TEMPLATE_GROUPS.get(group_key(category, ""), [])
+    keys = exact or category_only
+    if not keys:
+        # Backward compatibility with older category|subcategory groups.
+        keys = [k for g, vals in TEMPLATE_GROUPS.items()
+                if str(g).split("|", 1)[0].strip() == category
+                for k in vals]
     return [k for k in keys if k in ALL_TEXTS]
 
 
 def choose_template_for_link(mapping):
-    """Choose a template matching bridge category/subcategory, avoiding recent reuse."""
+    """Choose templates in saved order, cycling within the matching category.
+    This makes 1..50 (or any number) deterministic and never asks the user
+    to choose a template for each link."""
     if not mapping:
         return ACTIVE_KEY
     category = mapping.get("category") or mapping.get("topic_name") or ""
     subcategory = mapping.get("subcategory") or ""
-    candidates = get_group_templates(category, subcategory) if category and subcategory else []
-    if not candidates and category:
-        # Backward compatibility: topic_name alone may already be a TOPICS key.
-        candidates = [k for k, v in TEMPLATE_GROUPS.items() if k.startswith(str(category).strip() + "|") for k in v if k in ALL_TEXTS]
+    candidates = get_group_templates(category, subcategory)
     if not candidates:
         return ACTIVE_KEY
-    state = TOPIC_VARIANTS.setdefault("__template_state__", {})
-    hist_key = group_key(category, subcategory)
-    history = state.setdefault(hist_key, [])
-    available = [k for k in candidates if k not in history[-10:]] or candidates[:]
-    selected = random.choice(available)
-    history.append(selected)
-    state[hist_key] = history[-50:]
+
+    state = TOPIC_VARIANTS.setdefault("__template_cursor__", {})
+    key = group_key(category, subcategory) if subcategory else group_key(category, "")
+    cursor = int(state.get(key, 0))
+    selected = candidates[cursor % len(candidates)]
+    state[key] = cursor + 1
     save_json(TOPIC_VARIANTS_FILE, TOPIC_VARIANTS)
     return selected
 
@@ -752,12 +760,70 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 msg += f"\n📌 فوتر: {footer}"
             msg += f"\n💬 نقل‌قول: {'✅ روشن' if bq else '❌ خاموش'}"
             buttons = [
+                [InlineKeyboardButton("✏️ ویرایش قالب", callback_data=f"edit:{k}"),
+                 InlineKeyboardButton("📄 کپی قالب", callback_data=f"copy:{k}")],
+                [InlineKeyboardButton("👀 پیش‌نمایش", callback_data=f"preview:{k}")],
                 [InlineKeyboardButton("➕ افزودن متن رندوم", callback_data=f"rhadd:{k}")],
                 [InlineKeyboardButton("📋 لیست متن‌های رندوم", callback_data=f"rhlist:{k}")],
                 [InlineKeyboardButton(f"{'❌ خاموش' if bq else '✅ روشن'} نقل‌قول", callback_data=f"bq:{k}")],
                 [InlineKeyboardButton("🔙 بازگشت", callback_data="back_list")]
             ]
             await q.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(buttons))
+    elif data.startswith("edit:"):
+        if not has_permission(uid, "list"):
+            await q.edit_message_text("⛔ اجازه نداری!")
+            return
+        k = data[5:]
+        if k not in ALL_TEXTS:
+            await q.edit_message_text("❌ قالب پیدا نشد!")
+            return
+        context.user_data.clear()
+        context.user_data["state"] = "edit_template_text"
+        context.user_data["edit_template_key"] = k
+        current = ALL_TEXTS[k].get("link_text", "")
+        await q.edit_message_text(
+            f"✏️ ویرایش قالب «{k}»\n\n"
+            "متن فعلی را کامل می‌بینی. هرجایش را خواستی عوض کن و نسخه جدید را بفرست.\n\n"
+            f"{current}\n\n"
+            "اگر همان کلمه لینک‌شده قبلی داخل متن بماند، خودکار حفظ می‌شود.\n"
+            "برای لغو: لغو"
+        )
+    elif data.startswith("copy:"):
+        if not has_permission(uid, "list"):
+            await q.edit_message_text("⛔ اجازه نداری!")
+            return
+        k = data[5:]
+        if k not in ALL_TEXTS:
+            await q.edit_message_text("❌ قالب پیدا نشد!")
+            return
+        context.user_data.clear()
+        context.user_data["state"] = "copy_template_name"
+        context.user_data["copy_template_key"] = k
+        await q.edit_message_text(
+            f"📄 کپی از «{k}»\n\n"
+            "اسم قالب جدید را بفرست.\n"
+            "مثلاً: v2 یا وطنی-جدید\n\n"
+            "برای لغو: لغو"
+        )
+    elif data.startswith("preview:"):
+        if not has_permission(uid, "list"):
+            await q.edit_message_text("⛔ اجازه نداری!")
+            return
+        k = data[8:]
+        if k not in ALL_TEXTS:
+            await q.edit_message_text("❌ قالب پیدا نشد!")
+            return
+        try:
+            _, _, _, result = build_post_result(
+                "https://t.me/example", k, topic_name=None
+            )
+            await q.edit_message_text(
+                "👀 پیش‌نمایش قالب «%s»:\n\n%s" % (k, result),
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 بازگشت", callback_data=f"use:{k}")]])
+            )
+        except Exception as e:
+            await q.edit_message_text(f"❌ خطا در پیش‌نمایش: {e}")
     elif data.startswith("bq:"):
         if not has_permission(uid, "list"):
             await q.edit_message_text("⛔ اجازه نداری!")
@@ -1419,6 +1485,68 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    if state == "edit_template_text":
+        if not has_permission(uid, "list"):
+            context.user_data.clear()
+            await update.message.reply_text("⛔ اجازه نداری!", reply_markup=get_main_keyboard(uid))
+            return
+        if text in {"لغو", "❌ لغو"}:
+            context.user_data.clear()
+            await update.message.reply_text("❌ لغو شد.", reply_markup=get_main_keyboard(uid))
+            return
+        k = context.user_data.get("edit_template_key")
+        if not k or k not in ALL_TEXTS:
+            context.user_data.clear()
+            await update.message.reply_text("❌ قالب پیدا نشد.", reply_markup=get_main_keyboard(uid))
+            return
+        old_word = ALL_TEXTS[k].get("linked_word", "")
+        ALL_TEXTS[k]["link_text"] = text
+        ALL_TEXTS[k]["linked_word"] = old_word if old_word and old_word in text else ""
+        save_texts()
+        context.user_data.clear()
+        await update.message.reply_text(
+            f"✅ قالب «{k}» ویرایش شد.\n\n"
+            f"{text}\n\n"
+            "🔗 کلمه لینک‌شده: " + (ALL_TEXTS[k].get("linked_word") or "کل متن"),
+            reply_markup=get_main_keyboard(uid)
+        )
+        return
+
+    if state == "copy_template_name":
+        if not has_permission(uid, "list"):
+            context.user_data.clear()
+            await update.message.reply_text("⛔ اجازه نداری!", reply_markup=get_main_keyboard(uid))
+            return
+        if text in {"لغو", "❌ لغو"}:
+            context.user_data.clear()
+            await update.message.reply_text("❌ لغو شد.", reply_markup=get_main_keyboard(uid))
+            return
+        new_name = text.strip()
+        source = context.user_data.get("copy_template_key")
+        if not new_name or new_name in ALL_TEXTS:
+            await update.message.reply_text("❌ این اسم قبلاً وجود دارد. یک اسم دیگر بفرست.")
+            return
+        if not source or source not in ALL_TEXTS:
+            context.user_data.clear()
+            await update.message.reply_text("❌ قالب اصلی پیدا نشد.", reply_markup=get_main_keyboard(uid))
+            return
+        import copy as _copy
+        ALL_TEXTS[new_name] = _copy.deepcopy(ALL_TEXTS[source])
+        # Put the copy immediately after the source in every matching group.
+        for g, keys in TEMPLATE_GROUPS.items():
+            if source in keys:
+                pos = keys.index(source) + 1
+                if new_name not in keys:
+                    keys.insert(pos, new_name)
+        save_texts()
+        save_template_groups()
+        context.user_data.clear()
+        await update.message.reply_text(
+            f"✅ کپی ساخته شد!\n\n📄 اصلی: {source}\n📄 جدید: {new_name}",
+            reply_markup=get_main_keyboard(uid)
+        )
+        return
+
     if state == "waiting_random_header":
         if not has_permission(uid, "list"):
             await update.message.reply_text("⛔ اجازه نداری!", reply_markup=get_main_keyboard(uid))
@@ -1695,11 +1823,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     return
 
-    template = ALL_TEXTS.get(ACTIVE_KEY)
+    # If this URL was registered by the second bot, automatically choose
+    # the matching category template. Otherwise keep the old active-template flow.
+    mapping = get_link_mapping(url)
+    auto_key = choose_template_for_link(mapping) if mapping else ACTIVE_KEY
+    template = ALL_TEXTS.get(auto_key)
     if not template:
         await update.message.reply_text(
-            "📭 اول یه قالب انتخاب کن!\n\n"
-            "🎯 آماده‌سازی رو بزن و یه قالب انتخاب کن.",
+            "📭 قالب مناسب پیدا نشد. اول برای این موضوع قالب بساز.",
             reply_markup=get_main_keyboard(uid)
         )
         return
