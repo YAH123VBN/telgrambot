@@ -132,8 +132,7 @@ def can_use_bot(user_id: int) -> bool:
 def get_main_keyboard(user_id: int):
     buttons = [
         ["🎯 آماده‌سازی", "📋 لیست متن‌ها"],
-        ["➕ افزودن متن"],
-        ["⚡ پست سریع"],
+                ["⚡ پست سریع"],
         ["📁 پست‌های من"],
     ]
     if is_owner(user_id):
@@ -771,7 +770,7 @@ async def show_section(q, g):
         buttons.append([InlineKeyboardButton(f"📝 {k}", callback_data=f"use:{k}")])
         buttons.append([InlineKeyboardButton(f"🗑 حذف {k}", callback_data=f"del:{k}")])
     buttons.append([InlineKeyboardButton("🗑 حذف بخش", callback_data=f"section_del:{g}")]) if g != "__ungrouped__" else None
-    buttons.append([InlineKeyboardButton("🔙 لیست بخش‌ها", callback_data="back_list")])
+    buttons.append([InlineKeyboardButton("🔙 لیست بخش‌ها", callback_data="sections_menu")])
     await q.edit_message_text(title + f"\n\n📦 {len(keys)} قالب", reply_markup=InlineKeyboardMarkup(buttons))
 
 async def titles_all_start(q, context, g):
@@ -791,6 +790,18 @@ async def titles_all_start(q, context, g):
     await q.edit_message_text(msg)
 
 async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    if data == "sections_menu":
+        groups = list(TEMPLATE_GROUPS.keys())
+        buttons = [[InlineKeyboardButton("➕ ساخت بخش جدید", callback_data="section_add")]]
+        for g in groups:
+            buttons.append([InlineKeyboardButton("📁 " + section_title(g), callback_data=f"section:{g}")])
+        buttons.append([InlineKeyboardButton("🔙 بازگشت", callback_data="back_main")])
+        await q.edit_message_text(
+            "📁 بخش‌ها\n\nیک بخش را انتخاب کن یا بخش جدید بساز.",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
+        return
     global ACTIVE_KEY
     q = update.callback_query
     await q.answer()
@@ -834,7 +845,7 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         context.user_data.clear()
         context.user_data["state"] = "section_add_name"
-        await q.edit_message_text("📁 ساخت بخش جدید\n\nاسم بخش را بفرست.\nمثلاً: وطنی\n\nبرای لغو: لغو")
+        await q.edit_message_text("📁 بخش‌ها\n\nاسم بخش را بفرست.\nمثلاً: وطنی\n\nبرای لغو: لغو")
         return
 
     if data.startswith("section:"):
@@ -893,7 +904,7 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             save_template_groups()
         SECTION_SETTINGS.pop(g,None); save_section_settings()
         context.user_data.clear()
-        await q.edit_message_text("✅ بخش حذف شد. قالب‌ها به «بدون بخش» منتقل شدند.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 لیست بخش‌ها", callback_data="back_list")]]))
+        await q.edit_message_text("✅ بخش حذف شد. قالب‌ها به «بدون بخش» منتقل شدند.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 لیست بخش‌ها", callback_data="sections_menu")]]))
         return
 
     if data.startswith("section_add_text:"):
@@ -1009,7 +1020,7 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 [InlineKeyboardButton("➕ افزودن متن رندوم", callback_data=f"rhadd:{k}")],
                 [InlineKeyboardButton("📋 لیست متن‌های رندوم", callback_data=f"rhlist:{k}")],
                 [InlineKeyboardButton(f"{'❌ خاموش' if bq else '✅ روشن'} نقل‌قول", callback_data=f"bq:{k}")],
-                [InlineKeyboardButton("🔙 بازگشت", callback_data="back_list")]
+                [InlineKeyboardButton("🔙 بازگشت", callback_data="sections_menu")]
             ]
             await q.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(buttons))
     elif data.startswith("edit:"):
@@ -1095,7 +1106,7 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 [InlineKeyboardButton("➕ افزودن متن رندوم", callback_data=f"rhadd:{k}")],
                 [InlineKeyboardButton("📋 لیست متن‌های رندوم", callback_data=f"rhlist:{k}")],
                 [InlineKeyboardButton(f"{'❌ خاموش' if bq else '✅ روشن'} نقل‌قول", callback_data=f"bq:{k}")],
-                [InlineKeyboardButton("🔙 بازگشت", callback_data="back_list")]
+                [InlineKeyboardButton("🔙 بازگشت", callback_data="sections_menu")]
             ]
             await q.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(buttons))
     elif data.startswith("ready:"):
@@ -1280,7 +1291,7 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ACTIVE_KEY = next(iter(ALL_TEXTS), "")
         await q.edit_message_text(
             f"🗑️ قالب «{k}» با موفقیت حذف شد.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 لیست بخش‌ها", callback_data="back_list")]])
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 لیست بخش‌ها", callback_data="sections_menu")]])
         )
     elif data.startswith("del:"):
         if not has_permission(uid, "list"):
@@ -1297,7 +1308,7 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             save_texts(); save_template_groups(); save_section_settings()
             if ACTIVE_KEY == k and ALL_TEXTS:
                 ACTIVE_KEY = list(ALL_TEXTS.keys())[0]
-            await q.edit_message_text(f"🗑 قالب «{k}» حذف شد!", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 لیست بخش‌ها", callback_data="back_list")]]))
+            await q.edit_message_text(f"🗑 قالب «{k}» حذف شد!", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 لیست بخش‌ها", callback_data="sections_menu")]]))
     elif data == "back_list":
         await list_cmd(update, context)
     elif data.startswith("rhadd:"):
@@ -1552,6 +1563,17 @@ async def rebuild_admin_perms_inline(q, target_id):
 
 # ═══════════════════════════════════════════════════
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    if text == "📁 بخش‌ها":
+        groups = list(TEMPLATE_GROUPS.keys())
+        buttons = [[InlineKeyboardButton("➕ ساخت بخش جدید", callback_data="section_add")]]
+        for g in groups:
+            buttons.append([InlineKeyboardButton("📁 " + section_title(g), callback_data=f"section:{g}")])
+        await update.message.reply_text(
+            "📁 بخش‌ها\n\nیک بخش را انتخاب کن یا بخش جدید بساز.",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
+        return
     global ACTIVE_KEY
     text = update.message.text or ""
     state = context.user_data.get("state")
@@ -1777,7 +1799,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "📁 برای مدیریت قالب‌های این بخش از 📋 لیست متن‌ها وارد همان بخش شو.",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("📁 باز کردن بخش", callback_data=f"section:{g}")],
-                [InlineKeyboardButton("📋 لیست بخش‌ها", callback_data="back_list")]
+                [InlineKeyboardButton("📁 بخش‌ها", callback_data="sections_menu")]
             ])
         )
         return
@@ -1954,7 +1976,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "حالا می‌تونی مستقیم داخل همین بخش متن/قالب اضافه کنی.",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("📁 ورود به بخش", callback_data=f"section:{g}")],
-                [InlineKeyboardButton("📋 لیست بخش‌ها", callback_data="back_list")]
+                [InlineKeyboardButton("📁 بخش‌ها", callback_data="sections_menu")]
             ])
         )
         return
