@@ -763,7 +763,11 @@ async def show_section(q, g):
     buttons.append([InlineKeyboardButton("🏷️ تنظیم عنوان همه", callback_data=f"titles:{g}")])
     if g != "__ungrouped__":
         buttons.append([InlineKeyboardButton(f"{'⛔ خاموش کردن' if enabled else '⚡ روشن کردن'} پست سریع این بخش", callback_data=f"quicktoggle:{g}")])
-    buttons.append([InlineKeyboardButton("➕ افزودن قالب به این بخش", callback_data=f"section_add_template:{g}")])
+    if g != "__ungrouped__":
+        buttons.append([InlineKeyboardButton("➕ افزودن متن به این بخش", callback_data=f"section_add_text:{g}")])
+        buttons.append([InlineKeyboardButton("📦 افزودن قالب موجود به این بخش", callback_data=f"section_add_template:{g}")])
+    else:
+        buttons.append([InlineKeyboardButton("➕ افزودن متن", callback_data="tmpl_add")])
     for k in keys:
         buttons.append([InlineKeyboardButton(f"📝 {k}", callback_data=f"use:{k}")])
         buttons.append([InlineKeyboardButton(f"🗑 حذف {k}", callback_data=f"del:{k}")])
@@ -887,6 +891,27 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         SECTION_SETTINGS.pop(g,None); save_section_settings()
         context.user_data.clear()
         await q.edit_message_text("✅ بخش حذف شد. قالب‌ها به «بدون بخش» منتقل شدند.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 لیست بخش‌ها", callback_data="back_list")]]))
+        return
+
+    if data.startswith("section_add_text:"):
+        if not has_permission(uid, "manage_templates"):
+            await q.edit_message_text("⛔ اجازه ساخت قالب نداری!")
+            return
+        g = data[len("section_add_text:"):]
+        if g not in TEMPLATE_GROUPS:
+            await q.edit_message_text("❌ این بخش پیدا نشد!")
+            return
+        context.user_data.clear()
+        context.user_data["state"] = "section_tmpl_wait_link_text"
+        context.user_data["section_target"] = g
+        await q.edit_message_text(
+            f"➕ افزودن متن به بخش «{section_title(g)}»\n\n"
+            "📝 متن قالب را بفرست.\n\n"
+            "مثال:\n"
+            "Download pack مشـ.ـاهده ✅\n\n"
+            "بعد مشخص می‌کنیم کدام کلمه لینک شود.\n\n"
+            "برای لغو: لغو"
+        )
         return
 
     if data.startswith("section_add_template:"):
@@ -1669,6 +1694,91 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    if state == "section_tmpl_wait_link_text":
+        if not has_permission(uid, "manage_templates"):
+            context.user_data.clear()
+            await update.message.reply_text("⛔ اجازه نداری!", reply_markup=get_main_keyboard(uid))
+            return
+        if text in {"لغو", "❌ لغو"}:
+            context.user_data.clear()
+            await update.message.reply_text("❌ لغو شد.", reply_markup=get_main_keyboard(uid))
+            return
+        context.user_data["section_tmpl_link_text"] = text
+        context.user_data["state"] = "section_tmpl_wait_linked_word"
+        await update.message.reply_text(
+            "🔗 کدام کلمه/عبارت از متن باید لینک شود؟\n\n"
+            f"{text}\n\n"
+            "اگر می‌خواهی کل متن لینک شود، بنویس: همه\n"
+            "برای لغو: لغو"
+        )
+        return
+
+    if state == "section_tmpl_wait_linked_word":
+        if not has_permission(uid, "manage_templates"):
+            context.user_data.clear()
+            await update.message.reply_text("⛔ اجازه نداری!", reply_markup=get_main_keyboard(uid))
+            return
+        if text in {"لغو", "❌ لغو"}:
+            context.user_data.clear()
+            await update.message.reply_text("❌ لغو شد.", reply_markup=get_main_keyboard(uid))
+            return
+        link_text = context.user_data.get("section_tmpl_link_text", "")
+        linked_word = "" if text.strip() == "همه" else text.strip()
+        if linked_word and linked_word not in link_text:
+            await update.message.reply_text("❌ این عبارت داخل متن نیست. دوباره بفرست.")
+            return
+        context.user_data["section_tmpl_linked_word"] = linked_word
+        context.user_data["state"] = "section_tmpl_wait_name"
+        await update.message.reply_text(
+            "🏷 حالا یک اسم یکتا برای قالب بفرست.\n"
+            "مثال: وطنی-01\n\n"
+            "برای لغو: لغو"
+        )
+        return
+
+    if state == "section_tmpl_wait_name":
+        if not has_permission(uid, "manage_templates"):
+            context.user_data.clear()
+            await update.message.reply_text("⛔ اجازه نداری!", reply_markup=get_main_keyboard(uid))
+            return
+        if text in {"لغو", "❌ لغو"}:
+            context.user_data.clear()
+            await update.message.reply_text("❌ لغو شد.", reply_markup=get_main_keyboard(uid))
+            return
+        name = text.strip()
+        if not name or name in ALL_TEXTS:
+            await update.message.reply_text("❌ این اسم خالی است یا قبلاً استفاده شده. اسم دیگری بفرست.")
+            return
+        g = context.user_data.get("section_target")
+        if not g or g not in TEMPLATE_GROUPS:
+            context.user_data.clear()
+            await update.message.reply_text("❌ بخش پیدا نشد. دوباره وارد بخش شو.", reply_markup=get_main_keyboard(uid))
+            return
+        link_text = context.user_data.get("section_tmpl_link_text", "")
+        linked_word = context.user_data.get("section_tmpl_linked_word", "")
+        ALL_TEXTS[name] = {
+            "header": "",
+            "link_text": link_text,
+            "linked_word": linked_word,
+            "footer": "",
+            "random_headers": [],
+            "blockquote": False,
+            "title": ""
+        }
+        TEMPLATE_GROUPS.setdefault(g, []).append(name)
+        save_texts()
+        save_template_groups()
+        context.user_data.clear()
+        await update.message.reply_text(
+            f"✅ قالب «{name}» داخل بخش «{section_title(g)}» ساخته شد.\n\n"
+            "📁 برای مدیریت قالب‌های این بخش از 📋 لیست متن‌ها وارد همان بخش شو.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("📁 باز کردن بخش", callback_data=f"section:{g}")],
+                [InlineKeyboardButton("📋 لیست بخش‌ها", callback_data="back_list")]
+            ])
+        )
+        return
+
     if state == "tmpl_wait_link_text":
         if not has_permission(uid, "manage_templates"):
             context.user_data.clear()
@@ -1836,7 +1946,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("⚠️ این بخش از قبل وجود دارد. اسم دیگری بفرست."); return
         TEMPLATE_GROUPS[g]=[]; SECTION_SETTINGS[g]={"quick_enabled":False}; save_template_groups(); save_section_settings()
         context.user_data.clear()
-        await update.message.reply_text(f"✅ بخش «{name}» ساخته شد.\n\nحالا می‌تونی قالب‌ها رو داخلش قرار بدی.", reply_markup=get_main_keyboard(uid))
+        await update.message.reply_text(
+            f"✅ بخش «{name}» ساخته شد.\n\n"
+            "حالا می‌تونی مستقیم داخل همین بخش متن/قالب اضافه کنی.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("📁 ورود به بخش", callback_data=f"section:{g}")],
+                [InlineKeyboardButton("📋 لیست بخش‌ها", callback_data="back_list")]
+            ])
+        )
         return
 
     if state == "waiting_random_header":
