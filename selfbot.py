@@ -407,8 +407,19 @@ def build_post_result(url, template_key, topic_name=None):
 
     if fixed_title:
         header = fixed_title
-        if topic_name is not None and "\n" in link_text:
-            link_text = link_text.split("\n", 1)[1].lstrip("\n")
+        # If a template still contains its previous title inside link_text,
+        # remove that embedded header. Keep the actual link text intact.
+        # Prefer the linked_word as the anchor point; this also handles
+        # templates created from forwarded posts where the old title was
+        # accidentally stored together with the download text.
+        if "\n" in link_text:
+            if linked_word and linked_word in link_text:
+                before, after = link_text.split(linked_word, 1)
+                before_lines = [x.strip() for x in before.splitlines() if x.strip()]
+                if before_lines:
+                    link_text = linked_word + after
+            elif topic_name is not None:
+                link_text = link_text.split("\n", 1)[1].lstrip("\n")
     elif topic_name is not None:
         header = choose_topic_header(topic_name)
         if "\n" in link_text:
@@ -2063,7 +2074,25 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         titles=[line.strip() for line in text.splitlines() if line.strip()]
         changed=min(len(titles),len(keys))
         for i in range(changed):
-            ALL_TEXTS[keys[i]]["title"] = titles[i]
+            key = keys[i]
+            item = ALL_TEXTS[key]
+            new_title = titles[i]
+            old_title = str(item.get("title", "") or "").strip()
+
+            # The title is a replacement, not an extra line. If an older
+            # title was accidentally stored inside link_text, remove it now.
+            link_text = str(item.get("link_text", "") or "")
+            if old_title and link_text:
+                chunks = link_text.splitlines()
+                while chunks and not chunks[0].strip():
+                    chunks.pop(0)
+                if chunks and chunks[0].strip() == old_title:
+                    chunks.pop(0)
+                    while chunks and not chunks[0].strip():
+                        chunks.pop(0)
+                    item["link_text"] = "\n".join(chunks)
+
+            item["title"] = new_title
         save_texts(); context.user_data.clear()
         await update.message.reply_text(f"✅ {changed} عنوان تغییر کرد.\n📌 بقیه قالب‌ها دست‌نخورده ماندند.", reply_markup=get_main_keyboard(uid))
         return
