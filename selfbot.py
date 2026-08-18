@@ -384,7 +384,7 @@ def start_link_bridge_server():
 def save_admins():
     save_json(ADMINS_FILE, ADMINS)
 
-def add_post(user_id, header, link_text, linked_word, url, result_text):
+def add_post(user_id, header, link_text, linked_word, url, result_text, section=None):
     posts = load_json(POSTS_FILE, {})
     uid = str(user_id)
     if uid not in posts:
@@ -394,7 +394,8 @@ def add_post(user_id, header, link_text, linked_word, url, result_text):
         "link_text": link_text,
         "linked_word": linked_word,
         "url": url,
-        "result": result_text
+        "result": result_text,
+        "section": section or ""
     })
     save_json(POSTS_FILE, posts)
 
@@ -660,8 +661,9 @@ async def _show_final_menu(q):
         [InlineKeyboardButton("➕ افزودن پوشه", callback_data="final_add")],
         [InlineKeyboardButton("🗑 حذف پوشه", callback_data="final_del_menu")],
     ]
-    for idx, g in enumerate(groups):
-        buttons.append([InlineKeyboardButton(f"📁 {section_title(g)}", callback_data=f"final_open:{idx}")])
+    folder_buttons = [InlineKeyboardButton(f"📁 {section_title(g)}", callback_data=f"final_open:{idx}") for idx, g in enumerate(groups)]
+    for i in range(0, len(folder_buttons), 2):
+        buttons.append(folder_buttons[i:i + 2])
     buttons.append([InlineKeyboardButton("🔙 بازگشت", callback_data="final_close")])
     await q.edit_message_text("📁 نهایی\n\nپوشه موردنظر را انتخاب کن یا پوشه جدید بساز.", reply_markup=InlineKeyboardMarkup(buttons))
 
@@ -682,9 +684,12 @@ async def list_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             groups.append((g, valid))
 
     buttons = [[InlineKeyboardButton("➕ ساخت بخش جدید", callback_data="section_add")]]
-    for g, keys in sorted(groups, key=lambda x: x[0]):
+    section_buttons = []
+    for g, keys in sorted(groups, key=lambda x: section_title(x[0])):
         mark = "⚡" if section_enabled(g) else "⛔"
-        buttons.append([InlineKeyboardButton(f"📁 {section_title(g)} — {len(keys)} قالب {mark}", callback_data=f"section:{g}")])
+        section_buttons.append(InlineKeyboardButton(f"📁 {section_title(g)} — {len(keys)} قالب {mark}", callback_data=f"section:{g}"))
+    for i in range(0, len(section_buttons), 2):
+        buttons.append(section_buttons[i:i + 2])
 
     text = (
         "📋 لیست متن‌ها / قالب‌ها\n\n"
@@ -776,17 +781,36 @@ async def my_posts_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⛔ اجازه دیدن پست‌ها رو نداری!", reply_markup=get_main_keyboard(uid))
         return
     posts = get_posts(uid)
-    total = len(posts)
     if not posts:
         await update.message.reply_text("📭 هنوز پستی نساختی!", reply_markup=get_main_keyboard(uid))
         return
-    await update.message.reply_text(f"📁 در حال ارسال {total} پست...", reply_markup=get_main_keyboard(uid))
+    sections = {}
+    other = []
+    for post in posts:
+        g = post.get("section") or ""
+        if g:
+            sections.setdefault(g, []).append(post)
+        else:
+            other.append(post)
+    buttons = [[InlineKeyboardButton(f"📬 همه پست‌ها — {len(posts)}", callback_data="myposts_all")]]
+    sec_buttons = [InlineKeyboardButton(f"📁 {section_title(g)} — {len(sections[g])}", callback_data=f"myposts_sec:{g}") for g in sorted(sections.keys(), key=lambda x: section_title(x))]
+    for i in range(0, len(sec_buttons), 2):
+        buttons.append(sec_buttons[i:i + 2])
+    if other:
+        buttons.append([InlineKeyboardButton(f"📦 سایر — {len(other)}", callback_data="myposts_other")])
+    await update.message.reply_text(
+        "📁 پست‌های من\n\nیک بخش را انتخاب کن تا لینک‌های همان بخش رو به‌ترتیب ببینی.",
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
+
+
+async def _send_my_posts(context, chat_id, posts_list):
     sent = 0
     failed = 0
-    for post in posts:
+    for post in posts_list:
         try:
             await context.bot.send_message(
-                chat_id=update.effective_chat.id,
+                chat_id=chat_id,
                 text=post["result"],
                 parse_mode="HTML",
                 disable_web_page_preview=True
@@ -799,7 +823,7 @@ async def my_posts_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = f"✅ {sent} پست ارسال شد."
     if failed > 0:
         msg += f"\n⚠️ {failed} پست ارسال نشد."
-    await update.message.reply_text(msg, reply_markup=get_main_keyboard(uid))
+    await context.bot.send_message(chat_id=chat_id, text=msg)
 
 # ═══════════════════════════════════════════════════
 # Admin Management Commands
@@ -1608,6 +1632,37 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.edit_message_text(f"🗑 قالب «{k}» حذف شد!", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 لیست بخش‌ها", callback_data="back_list")]]))
     elif data == "back_list":
         await list_cmd(update, context)
+    elif data == "myposts_all":
+        if not has_permission(uid, "my_posts"):
+            await q.edit_message_text("⛔ اجازه نداری!")
+            return
+        posts = get_posts(uid)
+        if not posts:
+            await q.edit_message_text("📭 هنوز پستی نساختی!")
+            return
+        await q.edit_message_text(f"📁 در حال ارسال {len(posts)} پست...")
+        await _send_my_posts(context, update.effective_chat.id, posts)
+    elif data == "myposts_other":
+        if not has_permission(uid, "my_posts"):
+            await q.edit_message_text("⛔ اجازه نداری!")
+            return
+        posts = [p for p in get_posts(uid) if not p.get("section")]
+        if not posts:
+            await q.edit_message_text("📭 پستی در این بخش نیست.")
+            return
+        await q.edit_message_text(f"📦 در حال ارسال {len(posts)} پست...")
+        await _send_my_posts(context, update.effective_chat.id, posts)
+    elif data.startswith("myposts_sec:"):
+        if not has_permission(uid, "my_posts"):
+            await q.edit_message_text("⛔ اجازه نداری!")
+            return
+        g = data[len("myposts_sec:"):]
+        posts = [p for p in get_posts(uid) if p.get("section") == g]
+        if not posts:
+            await q.edit_message_text("📭 پستی در این بخش نیست.")
+            return
+        await q.edit_message_text(f"📁 {section_title(g)}\n\nدر حال ارسال {len(posts)} پست...")
+        await _send_my_posts(context, update.effective_chat.id, posts)
     elif data.startswith("rhadd:"):
         if not has_permission(uid, "list"):
             await q.edit_message_text("⛔ اجازه نداری!")
@@ -2570,7 +2625,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 cursor += 1
                 try:
                     header, link_text, linked_word, result=build_post_result(url, key, topic_name=None)
-                    add_post(uid, header, link_text, linked_word, url, result)
+                    add_post(uid, header, link_text, linked_word, url, result, section=group)
                     results.append(result)
                 except Exception as e:
                     results.append(f"❌ خطا برای {url}: {e}")
@@ -2621,7 +2676,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 selected_template_key,
                 topic_name=topic_name
             )
-            add_post(uid, header, link_text, linked_word, url, result)
+            add_post(uid, header, link_text, linked_word, url, result, section=find_group_for_key(selected_template_key))
 
             await update.message.reply_text(
                 result,
@@ -2678,7 +2733,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             header, link_text, linked_word, result = build_post_result(
                 url, selected_template_key, topic_name=topic_name
             )
-            add_post(uid, header, link_text, linked_word, url, result)
+            add_post(uid, header, link_text, linked_word, url, result, section=find_group_for_key(selected_template_key))
             await update.message.reply_text(result, parse_mode="HTML", disable_web_page_preview=True)
             await update.message.reply_text("✅ پست ساخته شد!", reply_markup=get_main_keyboard(uid))
         except Exception as e:
