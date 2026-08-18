@@ -182,6 +182,12 @@ SECTION_SETTINGS = load_json(SECTION_SETTINGS_FILE, {})
 
 ACTIVE_KEY = "p1"
 
+# In-memory state for the "نمایش پست" / "ایست" flow in My Posts.
+# Keyed by (user_id, scope) -> bool / int. Not persisted to disk on purpose:
+# it's a per-session viewing cursor, not user data.
+_POST_SEND_ACTIVE = {}
+_POST_SEND_CURSOR = {}
+
 def save_texts():
     save_json(TEXTS_FILE, ALL_TEXTS)
     save_json(TOPICS_FILE, TOPICS)
@@ -390,6 +396,7 @@ def add_post(user_id, header, link_text, linked_word, url, result_text, section=
     if uid not in posts:
         posts[uid] = []
     posts[uid].insert(0, {
+        "id": secrets.token_hex(4),
         "header": header,
         "link_text": link_text,
         "linked_word": linked_word,
@@ -400,8 +407,139 @@ def add_post(user_id, header, link_text, linked_word, url, result_text, section=
     save_json(POSTS_FILE, posts)
 
 def get_posts(user_id):
+    """Returns the user's posts, lazily assigning an id to any legacy post
+    that doesn't have one yet (needed for single-post deletion)."""
     posts = load_json(POSTS_FILE, {})
-    return posts.get(str(user_id), [])
+    uid = str(user_id)
+    lst = posts.get(uid, [])
+    changed = False
+    for p in lst:
+        if not p.get("id"):
+            p["id"] = secrets.token_hex(4)
+            changed = True
+    if changed:
+        posts[uid] = lst
+        save_json(POSTS_FILE, posts)
+    return lst
+
+def delete_post_by_id(user_id, post_id):
+    posts = load_json(POSTS_FILE, {})
+    uid = str(user_id)
+    lst = posts.get(uid, [])
+    new_lst = [p for p in lst if p.get("id") != post_id]
+    removed = len(lst) - len(new_lst)
+    posts[uid] = new_lst
+    save_json(POSTS_FILE, posts)
+    return removed
+
+def delete_posts_where(user_id, predicate):
+    posts = load_json(POSTS_FILE, {})
+    uid = str(user_id)
+    lst = posts.get(uid, [])
+    remaining = [p for p in lst if not predicate(p)]
+    removed = len(lst) - len(remaining)
+    posts[uid] = remaining
+    save_json(POSTS_FILE, posts)
+    return removed
+
+def _scope_title(scope):
+    if scope == "__ALL__":
+        return "📬 همه پست‌ها"
+    if scope == "__OTHER__":
+        return "📦 سایر"
+    return "📁 " + section_title(scope)
+
+def _posts_for_scope(uid, scope):
+    posts = get_posts(uid)
+    if scope == "__ALL__":
+        return posts
+    if scope == "__OTHER__":
+        return [p for p in posts if not p.get("section")]
+    return [p for p in posts if p.get("section") == scope]
+
+def _scope_predicate(scope):
+    if scope == "__ALL__":
+        return lambda p: True
+    if scope == "__OTHER__":
+        return lambda p: not p.get("section")
+    return lambda p: p.get("section") == scope
+
+def _myposts_section_menu(uid, scope):
+    posts = _posts_for_scope(uid, scope)
+    cursor = _POST_SEND_CURSOR.get((uid, scope), 0)
+    if cursor > len(posts):
+        cursor = 0
+    text = f"{_scope_title(scope)}\n\n📦 {len(posts)} پست"
+    buttons = []
+    if posts:
+        if 0 < cursor < len(posts):
+            text += f"\n▶️ تا پست {cursor} از {len(posts)} قبلاً نمایش داده شده."
+            buttons.append([InlineKeyboardButton("🖨 ادامه نمایش", callback_data=f"myposts_show:{scope}")])
+            buttons.append([InlineKeyboardButton("🔁 نمایش از اول", callback_data=f"myposts_showreset:{scope}")])
+        else:
+            if cursor >= len(posts) and cursor > 0:
+                text += "\n✅ همه پست‌های این بخش نمایش داده شدن."
+            show_cb = f"myposts_showreset:{scope}" if cursor >= len(posts) else f"myposts_show:{scope}"
+            buttons.append([InlineKeyboardButton("🖨 نمایش پست", callback_data=show_cb)])
+        buttons.append([InlineKeyboardButton("🗑 حذف پست", callback_data=f"myposts_delpick:{scope}")])
+        buttons.append([InlineKeyboardButton("🗑 حذف همه", callback_data=f"myposts_delall:{scope}")])
+    else:
+        text += "\n📭 هنوز پستی در این بخش نیست."
+    buttons.append([InlineKeyboardButton("🔙 بازگشت", callback_data="myposts_back")])
+    return text, InlineKeyboardMarkup(buttons)
+
+def _myposts_main_menu(uid):
+    posts = get_posts(uid)
+    groups = _final_groups()
+    counts = {}
+    other = 0
+    for post in posts:
+        g = post.get("section") or ""
+        if g:
+            counts[g] = counts.get(g, 0) + 1
+        else:
+            other += 1
+    buttons = [[InlineKeyboardButton(f"📬 همه پست‌ها — {len(posts)}", callback_data="myposts_all")]]
+    sec_buttons = [InlineKeyboardButton(f"📁 {section_title(g)} — {counts.get(g, 0)} پست", callback_data=f"myposts_sec:{g}") for g in groups]
+    for i in range(0, len(sec_buttons), 2):
+        buttons.append(sec_buttons[i:i + 2])
+    if other:
+        buttons.append([InlineKeyboardButton(f"📦 سایر — {other}", callback_data="myposts_other")])
+    text = "📁 پست‌های من\n\nهمون پوشه‌های «نهایی» اینجا هم هست؛ یکی رو انتخاب کن."
+    empty = not posts and not groups
+    return text, InlineKeyboardMarkup(buttons), empty
+
+async def _run_show_posts(bot, chat_id, uid, scope):
+    posts = _posts_for_scope(uid, scope)
+    idx = _POST_SEND_CURSOR.get((uid, scope), 0)
+    if idx >= len(posts):
+        idx = 0
+    while idx < len(posts):
+        if not _POST_SEND_ACTIVE.get((uid, scope)):
+            break
+        post = posts[idx]
+        try:
+            await bot.send_message(
+                chat_id=chat_id,
+                text=post["result"],
+                parse_mode="HTML",
+                disable_web_page_preview=True
+            )
+        except Exception:
+            pass
+        idx += 1
+        _POST_SEND_CURSOR[(uid, scope)] = idx
+        await asyncio.sleep(0.2)
+    _POST_SEND_ACTIVE[(uid, scope)] = False
+    if idx >= len(posts):
+        status = f"✅ همه {len(posts)} پست نمایش داده شد."
+    else:
+        status = f"⏹ متوقف شد. {idx} از {len(posts)} پست نمایش داده شد.\nبا «نمایش پست» از همینجا ادامه بده."
+    text2, markup2 = _myposts_section_menu(uid, scope)
+    try:
+        await bot.send_message(chat_id=chat_id, text=status + "\n\n" + text2, reply_markup=markup2)
+    except Exception:
+        pass
 
 
 def build_post_result(url, template_key, topic_name=None):
@@ -661,8 +799,9 @@ async def _show_final_menu(q):
         [InlineKeyboardButton("➕ افزودن پوشه", callback_data="final_add")],
         [InlineKeyboardButton("🗑 حذف پوشه", callback_data="final_del_menu")],
     ]
-    for idx, g in enumerate(groups):
-        buttons.append([InlineKeyboardButton(f"📁 {section_title(g)}", callback_data=f"final_open:{idx}")])
+    folder_buttons = [InlineKeyboardButton(f"📁 {section_title(g)}", callback_data=f"final_open:{idx}") for idx, g in enumerate(groups)]
+    for i in range(0, len(folder_buttons), 2):
+        buttons.append(folder_buttons[i:i + 2])
     buttons.append([InlineKeyboardButton("🔙 بازگشت", callback_data="final_close")])
     await q.edit_message_text("📁 نهایی\n\nپوشه موردنظر را انتخاب کن یا پوشه جدید بساز.", reply_markup=InlineKeyboardMarkup(buttons))
 
@@ -683,9 +822,12 @@ async def list_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             groups.append((g, valid))
 
     buttons = [[InlineKeyboardButton("➕ ساخت بخش جدید", callback_data="section_add")]]
+    section_buttons = []
     for g, keys in sorted(groups, key=lambda x: section_title(x[0])):
         mark = "⚡" if section_enabled(g) else "⛔"
-        buttons.append([InlineKeyboardButton(f"📁 {section_title(g)} — {len(keys)} قالب {mark}", callback_data=f"section:{g}")])
+        section_buttons.append(InlineKeyboardButton(f"📁 {section_title(g)} — {len(keys)} قالب {mark}", callback_data=f"section:{g}"))
+    for i in range(0, len(section_buttons), 2):
+        buttons.append(section_buttons[i:i + 2])
 
     text = (
         "📋 لیست متن‌ها / قالب‌ها\n\n"
@@ -776,50 +918,11 @@ async def my_posts_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not has_permission(uid, "my_posts"):
         await update.message.reply_text("⛔ اجازه دیدن پست‌ها رو نداری!", reply_markup=get_main_keyboard(uid))
         return
-    posts = get_posts(uid)
-    groups = _final_groups()
-    if not posts and not groups:
+    text, markup, empty = _myposts_main_menu(uid)
+    if empty:
         await update.message.reply_text("📭 هنوز پستی نساختی!", reply_markup=get_main_keyboard(uid))
         return
-    counts = {}
-    other = 0
-    for post in posts:
-        g = post.get("section") or ""
-        if g:
-            counts[g] = counts.get(g, 0) + 1
-        else:
-            other += 1
-    buttons = [[InlineKeyboardButton(f"📬 همه پست‌ها — {len(posts)}", callback_data="myposts_all")]]
-    for g in groups:
-        buttons.append([InlineKeyboardButton(f"📁 {section_title(g)} — {counts.get(g, 0)} پست", callback_data=f"myposts_sec:{g}")])
-    if other:
-        buttons.append([InlineKeyboardButton(f"📦 سایر — {other}", callback_data="myposts_other")])
-    await update.message.reply_text(
-        "📁 پست‌های من\n\nهمون پوشه‌های «نهایی» اینجا هم هست؛ یکی رو انتخاب کن تا پست‌های همون بخش رو به‌ترتیب ببینی.",
-        reply_markup=InlineKeyboardMarkup(buttons)
-    )
-
-
-async def _send_my_posts(context, chat_id, posts_list):
-    sent = 0
-    failed = 0
-    for post in posts_list:
-        try:
-            await context.bot.send_message(
-                chat_id=chat_id,
-                text=post["result"],
-                parse_mode="HTML",
-                disable_web_page_preview=True
-            )
-            sent += 1
-            await asyncio.sleep(0.1)
-        except Exception:
-            failed += 1
-            continue
-    msg = f"✅ {sent} پست ارسال شد."
-    if failed > 0:
-        msg += f"\n⚠️ {failed} پست ارسال نشد."
-    await context.bot.send_message(chat_id=chat_id, text=msg)
+    await update.message.reply_text(text, reply_markup=markup)
 
 # ═══════════════════════════════════════════════════
 # Admin Management Commands
@@ -1632,33 +1735,109 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not has_permission(uid, "my_posts"):
             await q.edit_message_text("⛔ اجازه نداری!")
             return
-        posts = get_posts(uid)
-        if not posts:
-            await q.edit_message_text("📭 هنوز پستی نساختی!")
-            return
-        await q.edit_message_text(f"📁 در حال ارسال {len(posts)} پست...")
-        await _send_my_posts(context, update.effective_chat.id, posts)
+        text2, markup2 = _myposts_section_menu(uid, "__ALL__")
+        await q.edit_message_text(text2, reply_markup=markup2)
     elif data == "myposts_other":
         if not has_permission(uid, "my_posts"):
             await q.edit_message_text("⛔ اجازه نداری!")
             return
-        posts = [p for p in get_posts(uid) if not p.get("section")]
-        if not posts:
-            await q.edit_message_text("📭 پستی در این بخش نیست.")
-            return
-        await q.edit_message_text(f"📦 در حال ارسال {len(posts)} پست...")
-        await _send_my_posts(context, update.effective_chat.id, posts)
+        text2, markup2 = _myposts_section_menu(uid, "__OTHER__")
+        await q.edit_message_text(text2, reply_markup=markup2)
     elif data.startswith("myposts_sec:"):
         if not has_permission(uid, "my_posts"):
             await q.edit_message_text("⛔ اجازه نداری!")
             return
         g = data[len("myposts_sec:"):]
-        posts = [p for p in get_posts(uid) if p.get("section") == g]
+        text2, markup2 = _myposts_section_menu(uid, g)
+        await q.edit_message_text(text2, reply_markup=markup2)
+    elif data.startswith("myposts_sec_open:"):
+        if not has_permission(uid, "my_posts"):
+            await q.edit_message_text("⛔ اجازه نداری!")
+            return
+        scope = data[len("myposts_sec_open:"):]
+        text2, markup2 = _myposts_section_menu(uid, scope)
+        await q.edit_message_text(text2, reply_markup=markup2)
+    elif data == "myposts_back":
+        if not has_permission(uid, "my_posts"):
+            await q.edit_message_text("⛔ اجازه نداری!")
+            return
+        text2, markup2, empty = _myposts_main_menu(uid)
+        if empty:
+            await q.edit_message_text("📭 هنوز پستی نساختی!")
+            return
+        await q.edit_message_text(text2, reply_markup=markup2)
+    elif data.startswith("myposts_show:") or data.startswith("myposts_showreset:"):
+        if not has_permission(uid, "my_posts"):
+            await q.edit_message_text("⛔ اجازه نداری!")
+            return
+        reset = data.startswith("myposts_showreset:")
+        scope = data[len("myposts_showreset:"):] if reset else data[len("myposts_show:"):]
+        posts = _posts_for_scope(uid, scope)
         if not posts:
             await q.edit_message_text("📭 پستی در این بخش نیست.")
             return
-        await q.edit_message_text(f"📁 {section_title(g)}\n\nدر حال ارسال {len(posts)} پست...")
-        await _send_my_posts(context, update.effective_chat.id, posts)
+        if reset or _POST_SEND_CURSOR.get((uid, scope), 0) >= len(posts):
+            _POST_SEND_CURSOR[(uid, scope)] = 0
+        _POST_SEND_ACTIVE[(uid, scope)] = True
+        await q.edit_message_text(
+            f"{_scope_title(scope)}\n\n🚀 در حال ارسال...",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⏹ ایست", callback_data=f"myposts_stop:{scope}")]])
+        )
+        context.application.create_task(_run_show_posts(context.bot, update.effective_chat.id, uid, scope))
+    elif data.startswith("myposts_stop:"):
+        scope = data[len("myposts_stop:"):]
+        _POST_SEND_ACTIVE[(uid, scope)] = False
+    elif data.startswith("myposts_delpick:"):
+        if not has_permission(uid, "my_posts"):
+            await q.edit_message_text("⛔ اجازه نداری!")
+            return
+        scope = data[len("myposts_delpick:"):]
+        posts = _posts_for_scope(uid, scope)
+        if not posts:
+            await q.edit_message_text("📭 پستی در این بخش نیست.")
+            return
+        shown = posts[:40]
+        buttons = []
+        for p in shown:
+            label = (p.get("header") or p.get("link_text") or "پست").strip() or "پست"
+            buttons.append([InlineKeyboardButton(f"🗑 {label[:28]}", callback_data=f"myposts_delone:{scope}:{p.get('id','')}")])
+        note = f"\n\n(فقط {len(shown)} تای اول نشون داده شده)" if len(posts) > len(shown) else ""
+        buttons.append([InlineKeyboardButton("🔙 بازگشت", callback_data=f"myposts_sec_open:{scope}")])
+        await q.edit_message_text(f"{_scope_title(scope)}\n\nکدوم پست حذف بشه؟{note}", reply_markup=InlineKeyboardMarkup(buttons))
+    elif data.startswith("myposts_delone:"):
+        if not has_permission(uid, "my_posts"):
+            await q.edit_message_text("⛔ اجازه نداری!")
+            return
+        rest = data[len("myposts_delone:"):]
+        scope, _, post_id = rest.partition(":")
+        removed = delete_post_by_id(uid, post_id)
+        _POST_SEND_CURSOR.pop((uid, scope), None)
+        msg = "✅ پست حذف شد." if removed else "❌ پست پیدا نشد (شاید قبلاً حذف شده)."
+        text2, markup2 = _myposts_section_menu(uid, scope)
+        await q.edit_message_text(msg + "\n\n" + text2, reply_markup=markup2)
+    elif data.startswith("myposts_delall_yes:"):
+        if not has_permission(uid, "my_posts"):
+            await q.edit_message_text("⛔ اجازه نداری!")
+            return
+        scope = data[len("myposts_delall_yes:"):]
+        removed = delete_posts_where(uid, _scope_predicate(scope))
+        _POST_SEND_CURSOR.pop((uid, scope), None)
+        _POST_SEND_ACTIVE.pop((uid, scope), None)
+        text2, markup2 = _myposts_section_menu(uid, scope)
+        await q.edit_message_text(f"✅ {removed} پست حذف شد.\n\n" + text2, reply_markup=markup2)
+    elif data.startswith("myposts_delall:"):
+        if not has_permission(uid, "my_posts"):
+            await q.edit_message_text("⛔ اجازه نداری!")
+            return
+        scope = data[len("myposts_delall:"):]
+        posts = _posts_for_scope(uid, scope)
+        await q.edit_message_text(
+            f"⚠️ حذف همه‌ی {len(posts)} پست «{_scope_title(scope)}»؟\nاین کار برگشت‌ناپذیره.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ بله، حذف کن", callback_data=f"myposts_delall_yes:{scope}")],
+                [InlineKeyboardButton("❌ لغو", callback_data=f"myposts_sec_open:{scope}")]
+            ])
+        )
     elif data.startswith("rhadd:"):
         if not has_permission(uid, "list"):
             await q.edit_message_text("⛔ اجازه نداری!")
