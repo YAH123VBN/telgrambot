@@ -290,7 +290,25 @@ def choose_post_title(template_key):
     return ""
 
 
-def find_group_for_key(k):
+def reset_title_bank_progress(g):
+    """Reset bank progress (not the stored items) for every template in a
+    section, so the next quick-post round starts again from 'تنظیم عنوان
+    همه' instead of continuing mid-way through each template's bank."""
+    section = TITLE_BANKS.get(g)
+    if not isinstance(section, dict):
+        return 0
+    reset_count = 0
+    for k, entry in section.items():
+        if not isinstance(entry, dict):
+            continue
+        entry["cursor"] = 0
+        entry["first_used"] = False
+        reset_count += 1
+    save_title_banks()
+    return reset_count
+
+
+
     """Return the section/group key that a template belongs to, or None."""
     for g, keys in TEMPLATE_GROUPS.items():
         if k in keys:
@@ -1204,12 +1222,42 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         context.user_data["quick_mode"] = True
         context.user_data["quick_group"] = g
+        buttons = [[InlineKeyboardButton("🔄 ریست (برگشت به تنظیم عنوان همه)", callback_data=f"quickreset:{g}")]]
         await q.edit_message_text(
             f"⚡ پست سریع فعال شد: {section_title(g)}\n\n"
             f"📦 {len(keys)} قالب در صف این بخش است.\n"
             "حالا فقط لینک‌ها را بفرست یا پیام‌های ربات دوم را Forward کن.\n"
             "هر لینک = یک پست.\n\n"
-            "برای خروج: لغو"
+            "اگر اشتباهی پیش اومد و می‌خوای دوباره از عنوان‌های «تنظیم عنوان همه» شروع کنی (نه از وسط بانک کلمات)، روی ریست بزن.\n\n"
+            "برای خروج: لغو",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
+        return
+
+    if data.startswith("quickreset:"):
+        if not has_permission(uid, "ready"):
+            await q.edit_message_text("⛔ اجازه نداری!")
+            return
+        g = data[len("quickreset:"):]
+        if not section_enabled(g):
+            await q.edit_message_text("⛔ این بخش برای پست سریع خاموش است.")
+            return
+        keys = [k for k in TEMPLATE_GROUPS.get(g, []) if k in ALL_TEXTS]
+        if not keys:
+            await q.edit_message_text("📭 این بخش قالبی ندارد.")
+            return
+        reset_title_bank_progress(g)
+        context.user_data["quick_mode"] = True
+        context.user_data["quick_group"] = g
+        buttons = [[InlineKeyboardButton("🔄 ریست (برگشت به تنظیم عنوان همه)", callback_data=f"quickreset:{g}")]]
+        await q.edit_message_text(
+            f"✅ ریست شد: {section_title(g)}\n\n"
+            "همه‌ی قالب‌های این بخش دوباره از عنوان «تنظیم عنوان همه» شروع می‌کنن؛ بانک کلمات دست‌نخورده مونده و ترتیبش از اول همون‌جا ادامه پیدا می‌کنه که بعد از این ریست به آن‌ها رسید.\n\n"
+            f"📦 {len(keys)} قالب در صف این بخش است.\n"
+            "حالا فقط لینک‌ها را بفرست یا پیام‌های ربات دوم را Forward کن.\n"
+            "هر لینک = یک پست.\n\n"
+            "برای خروج: لغو",
+            reply_markup=InlineKeyboardMarkup(buttons)
         )
         return
 
