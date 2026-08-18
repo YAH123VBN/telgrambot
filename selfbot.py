@@ -37,6 +37,7 @@ LINK_REGISTRY_FILE = data_path("link_registry.json")
 TOPIC_VARIANTS_FILE = data_path("topic_variants.json")
 TEMPLATE_GROUPS_FILE = data_path("template_groups.json")
 SECTION_SETTINGS_FILE = data_path("section_settings.json")
+TITLE_BANK_FILE = data_path("title_bank.json")
 LINK_BRIDGE_KEY_FILE = data_path("link_bridge_key.txt")
 ADMINS_FILE = data_path("admins.json")
 LINK_REGEX = re.compile(r'(https?://\S+|t\.me/\S+)', re.IGNORECASE)
@@ -179,6 +180,8 @@ TOPIC_VARIANTS = load_json(TOPIC_VARIANTS_FILE, {})
 # Maps "category|subcategory" -> template keys.
 TEMPLATE_GROUPS = load_json(TEMPLATE_GROUPS_FILE, {})
 SECTION_SETTINGS = load_json(SECTION_SETTINGS_FILE, {})
+# Per-section, per-template title banks. Each bank is independent.
+TITLE_BANKS = load_json(TITLE_BANK_FILE, {})
 
 ACTIVE_KEY = "p1"
 
@@ -216,6 +219,75 @@ def set_section_last_quote(g, text):
 def section_title(g):
     category, subcategory = (g.split("|", 1) + [""])[:2]
     return f"{category} / {subcategory}" if subcategory else category
+
+
+def _title_bank_entry(g, k):
+    """Return the persistent title-bank entry for one section/template."""
+    section = TITLE_BANKS.setdefault(g, {})
+    entry = section.setdefault(k, {"items": [], "cursor": 0, "first_used": False})
+    if not isinstance(entry, dict):
+        entry = {"items": [], "cursor": 0, "first_used": False}
+        section[k] = entry
+    items = entry.get("items", [])
+    if not isinstance(items, list):
+        items = []
+    entry["items"] = [str(x).strip() for x in items if str(x).strip()]
+    try:
+        entry["cursor"] = max(0, int(entry.get("cursor", 0)))
+    except (TypeError, ValueError):
+        entry["cursor"] = 0
+    entry["first_used"] = bool(entry.get("first_used", False))
+    return entry
+
+
+def save_title_banks():
+    save_json(TITLE_BANK_FILE, TITLE_BANKS)
+
+
+def add_title_bank_items(g, k, items):
+    """Append new bank titles without resetting already-consumed titles."""
+    entry = _title_bank_entry(g, k)
+    had_items = bool(entry.get("items"))
+    entry["items"].extend([str(x).strip() for x in items if str(x).strip()])
+    # A newly-created bank starts at the first bank item on the second use.
+    if not had_items and entry["items"]:
+        entry["cursor"] = 0
+        entry["first_used"] = False
+    save_title_banks()
+    return len(items)
+
+
+def choose_post_title(template_key):
+    """
+    Title selection for real posts:
+      1) first use of a template in a section -> current 'تنظیم عنوان همه' title
+      2) later uses -> next item from that template's bank, without repetition
+      3) when the bank is exhausted -> no title is repeated
+
+    Returns None when the template is not assigned to a section, so old
+    behavior outside sections remains untouched.
+    """
+    g = find_group_for_key(template_key)
+    if not g:
+        return None
+    base_title = str(ALL_TEXTS.get(template_key, {}).get("title", "") or "").strip()
+    entry = _title_bank_entry(g, template_key)
+
+    if not entry["first_used"]:
+        entry["first_used"] = True
+        save_title_banks()
+        return base_title
+
+    items = entry.get("items", [])
+    cursor = int(entry.get("cursor", 0))
+    if cursor < len(items):
+        selected = items[cursor]
+        entry["cursor"] = cursor + 1
+        save_title_banks()
+        return selected
+
+    # Bank is finite: never go back to the first/manual title and never repeat.
+    return ""
 
 
 def find_group_for_key(k):
@@ -542,7 +614,7 @@ async def _run_show_posts(bot, chat_id, uid, scope):
         pass
 
 
-def build_post_result(url, template_key, topic_name=None):
+def build_post_result(url, template_key, topic_name=None, title_override=None):
     """Build a post. The ONLY source of the post title is ALL_TEXTS[key]["title"]."""
     base = ALL_TEXTS.get(template_key, {})
     if not base:
@@ -556,9 +628,10 @@ def build_post_result(url, template_key, topic_name=None):
     if quote_text and quote_text not in link_text:
         quote_text = ""
 
-    # IMPORTANT: title comes ONLY from the "تنظیم تایتل همه" field.
-    # topic_name, header, random_headers, etc. are never used as a title.
-    header = str(base.get("title", "") or "").strip()
+    # A real post may supply a title from the section's title-bank flow.
+    # If no override is supplied, preserve the existing template title exactly.
+    header = (str(title_override).strip() if title_override is not None
+              else str(base.get("title", "") or "").strip())
 
     # link_text is used exactly as stored — "تنظیم عنوان همه" already keeps
     # it clean (no leftover title line, no lost blank-line spacing) at the
@@ -631,7 +704,7 @@ async def backup_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⛔ فقط مالک ربات می‌تونه بکاپ بگیره!")
         return
 
-    files = [ADMINS_FILE, TEXTS_FILE, TOPICS_FILE, POSTS_FILE, LINK_REGISTRY_FILE, TOPIC_VARIANTS_FILE, TEMPLATE_GROUPS_FILE, LINK_BRIDGE_KEY_FILE]
+    files = [ADMINS_FILE, TEXTS_FILE, TOPICS_FILE, POSTS_FILE, LINK_REGISTRY_FILE, TOPIC_VARIANTS_FILE, TEMPLATE_GROUPS_FILE, TITLE_BANK_FILE, LINK_BRIDGE_KEY_FILE]
     existing_files = [path for path in files if os.path.isfile(path)]
 
     if not existing_files:
@@ -1004,6 +1077,7 @@ async def show_section(q, g):
     enabled = section_enabled(g)
     buttons=[]
     if keys:
+        buttons.append([InlineKeyboardButton("🏷️ بانک کلمات", callback_data=f"titlebank:{g}")])
         buttons.append([InlineKeyboardButton("🏷️ تنظیم عنوان همه", callback_data=f"titles_all:{g}")])
     else:
         buttons.append([InlineKeyboardButton("📭 این بخش فعلاً خالی است", callback_data="noop")])
@@ -1152,6 +1226,57 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.edit_message_text("⛔ اجازه نداری!")
             return
         await show_section(q, data[8:])
+        return
+
+    if data.startswith("titlebank:"):
+        if not has_permission(uid, "list"):
+            await q.edit_message_text("⛔ اجازه نداری!")
+            return
+        g = data[len("titlebank:"):]
+        keys = [k for k in TEMPLATE_GROUPS.get(g, []) if k in ALL_TEXTS]
+        if not keys:
+            await q.edit_message_text("📭 این بخش قالبی ندارد.")
+            return
+        buttons = []
+        for k in keys:
+            buttons.append([InlineKeyboardButton(k, callback_data=f"tbk:{g}:{k}")])
+        buttons.append([InlineKeyboardButton("🔙 بازگشت", callback_data=f"section:{g}")])
+        await q.edit_message_text(
+            f"🏷️ بانک کلمات — {section_title(g)}\n\n"
+            "قالب موردنظر را انتخاب کن:",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
+        return
+
+    if data.startswith("tbk:"):
+        if not has_permission(uid, "list"):
+            await q.edit_message_text("⛔ اجازه نداری!")
+            return
+        parts = data.split(":", 2)
+        if len(parts) != 3:
+            await q.edit_message_text("❌ خطا در انتخاب قالب.")
+            return
+        _, g, k = parts
+        keys = [x for x in TEMPLATE_GROUPS.get(g, []) if x in ALL_TEXTS]
+        if k not in keys:
+            await q.edit_message_text("❌ قالب پیدا نشد یا دیگر در این بخش نیست.")
+            return
+        context.user_data.clear()
+        context.user_data["state"] = "title_bank_add"
+        context.user_data["title_bank_group"] = g
+        context.user_data["title_bank_template"] = k
+        entry = _title_bank_entry(g, k)
+        count = len(entry.get("items", []))
+        await q.edit_message_text(
+            f"🏷️ بانک کلمات — {k}\n\n"
+            "متن‌هایی که برای این قسمت نیاز دارید را در یک پیام بفرست؛ هر خط = یک عنوان.\n\n"
+            "مثال:\n"
+            "سیاه\n"
+            "گلی\n"
+            "فلان\n\n"
+            f"📦 تعداد متن‌های بانک: {count}\n\n"
+            "برای لغو: لغو"
+        )
         return
 
     if data.startswith("titles_all:"):
@@ -1903,8 +2028,9 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await q.edit_message_text("❌ خطا! موضوع پیدا نشد.")
                 return
             topic_name = topic_names[idx]
+            title_override = choose_post_title(ACTIVE_KEY)
             header, link_text, linked_word, result = build_post_result(
-                url, ACTIVE_KEY, topic_name=topic_name
+                url, ACTIVE_KEY, topic_name=topic_name, title_override=title_override
             )
             try:
                 await q.edit_message_text(result, parse_mode="HTML", disable_web_page_preview=True)
@@ -2513,6 +2639,37 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    if state == "title_bank_add":
+        if not has_permission(uid, "list"):
+            context.user_data.clear(); await update.message.reply_text("⛔ اجازه نداری!", reply_markup=get_main_keyboard(uid)); return
+        if text in {"لغو", "❌ لغو"}:
+            g = context.user_data.get("title_bank_group")
+            context.user_data.clear()
+            await update.message.reply_text(
+                "❌ لغو شد.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 بازگشت به بخش", callback_data=f"section:{g}")]]) if g else get_main_keyboard(uid)
+            )
+            return
+        g = context.user_data.get("title_bank_group")
+        k = context.user_data.get("title_bank_template")
+        if not g or not k or k not in ALL_TEXTS or k not in TEMPLATE_GROUPS.get(g, []):
+            context.user_data.clear()
+            await update.message.reply_text("❌ قالب پیدا نشد.", reply_markup=get_main_keyboard(uid))
+            return
+        items = [line.strip() for line in text.splitlines() if line.strip()]
+        if not items:
+            await update.message.reply_text("❌ حداقل یک متن در یک خط بفرست.")
+            return
+        add_title_bank_items(g, k, items)
+        entry = _title_bank_entry(g, k)
+        total = len(entry.get("items", []))
+        context.user_data.clear()
+        await update.message.reply_text(
+            f"✅ {len(items)} متن به بانک «{k}» اضافه شد.\n📦 مجموع بانک این قالب: {total}",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 بازگشت به بانک", callback_data=f"titlebank:{g}")]])
+        )
+        return
+
     if state == "titles_all":
         if not has_permission(uid, "list"):
             context.user_data.clear(); await update.message.reply_text("⛔ اجازه نداری!", reply_markup=get_main_keyboard(uid)); return
@@ -2799,7 +2956,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 key=keys[cursor % len(keys)]
                 cursor += 1
                 try:
-                    header, link_text, linked_word, result=build_post_result(url, key, topic_name=None)
+                    title_override = choose_post_title(key)
+                    header, link_text, linked_word, result=build_post_result(
+                        url, key, topic_name=None, title_override=title_override
+                    )
                     add_post(uid, header, link_text, linked_word, url, result, section=group)
                     results.append(result)
                 except Exception as e:
@@ -2840,16 +3000,19 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         _USER_LOCKS[uid] = True
         try:
-            # If this template has a manually assigned title, that title is
-            # authoritative. Do NOT pass the automatic topic/category header
-            # into the builder, otherwise the old topic header can appear
-            # together with the custom title (or override it in older logic).
-            custom_title = str(ALL_TEXTS.get(selected_template_key, {}).get("title", "") or "").strip()
-            topic_name = None if custom_title else (mapped.get("topic_name") or mapped.get("category") or None)
+            title_override = choose_post_title(selected_template_key)
+            # A section title-bank is authoritative for section templates,
+            # including an intentionally empty title after its finite bank is exhausted.
+            if title_override is not None:
+                topic_name = None
+            else:
+                custom_title = str(ALL_TEXTS.get(selected_template_key, {}).get("title", "") or "").strip()
+                topic_name = None if custom_title else (mapped.get("topic_name") or mapped.get("category") or None)
             header, link_text, linked_word, result = build_post_result(
                 url,
                 selected_template_key,
-                topic_name=topic_name
+                topic_name=topic_name,
+                title_override=title_override
             )
             add_post(uid, header, link_text, linked_word, url, result, section=find_group_for_key(selected_template_key))
 
@@ -2899,14 +3062,17 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if post_mode == "no_topic":
             selected_template_key = ACTIVE_KEY
 
-        # A custom title replaces the topic title completely.
-        custom_title = str(ALL_TEXTS.get(selected_template_key, {}).get("title", "") or "").strip()
-        if custom_title:
+        title_override = choose_post_title(selected_template_key)
+        if title_override is not None:
             topic_name = None
+        else:
+            custom_title = str(ALL_TEXTS.get(selected_template_key, {}).get("title", "") or "").strip()
+            if custom_title:
+                topic_name = None
 
         try:
             header, link_text, linked_word, result = build_post_result(
-                url, selected_template_key, topic_name=topic_name
+                url, selected_template_key, topic_name=topic_name, title_override=title_override
             )
             add_post(uid, header, link_text, linked_word, url, result, section=find_group_for_key(selected_template_key))
             await update.message.reply_text(result, parse_mode="HTML", disable_web_page_preview=True)
@@ -2989,6 +3155,7 @@ def main():
     print(f"📄 Link registry: {LINK_REGISTRY_FILE} ({os.path.getsize(LINK_REGISTRY_FILE) if os.path.exists(LINK_REGISTRY_FILE) else 'new'})")
     print(f"📄 Template groups: {TEMPLATE_GROUPS_FILE} ({os.path.getsize(TEMPLATE_GROUPS_FILE) if os.path.exists(TEMPLATE_GROUPS_FILE) else 'new'})")
     print(f"📄 Section settings: {SECTION_SETTINGS_FILE} ({os.path.getsize(SECTION_SETTINGS_FILE) if os.path.exists(SECTION_SETTINGS_FILE) else 'new'})")
+    print(f"📄 Title bank: {TITLE_BANK_FILE} ({os.path.getsize(TITLE_BANK_FILE) if os.path.exists(TITLE_BANK_FILE) else 'new'})")
     print(f"🔑 Link bridge key: {LINK_BRIDGE_KEY}")
     start_link_bridge_server()
     app = Application.builder().token(TOKEN).post_init(post_init).build()
