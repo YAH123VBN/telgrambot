@@ -2111,4 +2111,506 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ این متن داخل قالب پیدا نشد. عین همون تکه از متن را کپی و دوباره بفرست.\n\nبرای لغو: لغو")
             return
         item["quote_text"] = quote_text
-        i
+        item["blockquote"] = True
+        save_texts()
+        context.user_data.clear()
+        await update.message.reply_text(
+            f"✅ نقل‌قول برای «{k}» روشن شد.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 بازگشت به قالب", callback_data=f"use:{k}")]
+            ])
+        )
+        return
+
+    if state == "titles_all":
+        if not has_permission(uid, "list"):
+            context.user_data.clear(); await update.message.reply_text("⛔ اجازه نداری!", reply_markup=get_main_keyboard(uid)); return
+        if text in {"لغو", "❌ لغو"}:
+            context.user_data.clear(); await update.message.reply_text("❌ لغو شد.", reply_markup=get_main_keyboard(uid)); return
+        g = context.user_data.get("titles_group")
+        keys = context.user_data.get("titles_keys", [])
+        titles = [line.strip() for line in text.splitlines() if line.strip()]
+        changed = min(len(titles), len(keys))
+        for i in range(changed):
+            key = keys[i]
+            item = ALL_TEXTS.get(key)
+            if not item:
+                continue
+            new_title = titles[i]
+
+            # A template's body (link_text) may or may not have its own
+            # leading title-like line. Detect that shape directly instead of
+            # guessing from linked_word or a previously-stored title — that
+            # old approach deleted real content any time the linked phrase
+            # happened to appear in the body, even with no old title at all.
+            #
+            # Shape 1: "TitleLine\n\nRest of the body..." — the first line
+            # is non-blank and is immediately followed by a blank line. That
+            # first line is acting as the title; drop only that one line,
+            # keeping the blank line (and everything else) exactly as-is.
+            # Shape 2: anything else — no separable title line exists in the
+            # body (the title, if any, lives only in the "title" field), so
+            # link_text is left completely untouched.
+            link_text = str(item.get("link_text", "") or "")
+            lines = link_text.splitlines(keepends=True)
+            if len(lines) >= 2 and lines[0].strip() and not lines[1].strip():
+                del lines[0]
+                item["link_text"] = "".join(lines)
+
+            item["title"] = new_title
+            item["header"] = ""
+            item["random_headers"] = []
+        save_texts(); context.user_data.clear()
+        await update.message.reply_text(
+            f"✅ عنوان {changed} قالب تغییر کرد.\n📌 بقیه‌ی قالب‌های این بخش دست‌نخورده ماندند.",
+            reply_markup=get_main_keyboard(uid)
+        )
+        return
+
+    if state == "section_add_name":
+        if not has_permission(uid, "list"):
+            context.user_data.clear(); await update.message.reply_text("⛔ اجازه نداری!", reply_markup=get_main_keyboard(uid)); return
+        if text in {"لغو", "❌ لغو"}:
+            context.user_data.clear(); await update.message.reply_text("❌ لغو شد.", reply_markup=get_main_keyboard(uid)); return
+        name=text.strip()
+        if not name:
+            await update.message.reply_text("❌ اسم بخش نمی‌تواند خالی باشد."); return
+        g=group_key(name, "")
+        if g in TEMPLATE_GROUPS:
+            await update.message.reply_text("⚠️ این بخش از قبل وجود دارد. اسم دیگری بفرست."); return
+        TEMPLATE_GROUPS[g]=[]; SECTION_SETTINGS[g]={"quick_enabled":False}; save_template_groups(); save_section_settings()
+        return_to_final = bool(context.user_data.get("return_to_final"))
+        context.user_data.clear()
+        if return_to_final:
+            await update.message.reply_text(
+                f"✅ پوشه «{name}» ساخته شد.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("📁 ورود به پوشه", callback_data=f"section:{g}")],
+                    [InlineKeyboardButton("📁 برگشت به نهایی", callback_data="final_back")]
+                ])
+            )
+        else:
+            await update.message.reply_text(
+                f"✅ بخش «{name}» ساخته شد.\n\n"
+                "حالا می‌تونی مستقیم داخل همین بخش متن/قالب اضافه کنی.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("📁 ورود به بخش", callback_data=f"section:{g}")],
+                    [InlineKeyboardButton("📋 لیست بخش‌ها", callback_data="back_list")]
+                ])
+            )
+        return
+
+    if state == "waiting_random_header":
+        if not has_permission(uid, "list"):
+            await update.message.reply_text("⛔ اجازه نداری!", reply_markup=get_main_keyboard(uid))
+            context.user_data.clear()
+            return
+        k = context.user_data.get("rh_template")
+        if not k or k not in ALL_TEXTS:
+            await update.message.reply_text("❌ خطا! دوباره شروع کن.", reply_markup=get_main_keyboard(uid))
+            context.user_data.clear()
+            return
+        if "random_headers" not in ALL_TEXTS[k]:
+            ALL_TEXTS[k]["random_headers"] = []
+        ALL_TEXTS[k]["random_headers"].append(text)
+        save_texts()
+        rh_count = len(ALL_TEXTS[k]["random_headers"])
+        await update.message.reply_text(
+            f"✅ اضافه شد!\n\n"
+            f"🎲 الان {rh_count} تا متن رندوم برای {k} داری.",
+            reply_markup=get_main_keyboard(uid)
+        )
+        context.user_data.clear()
+        return
+    if state == "waiting_topic_name":
+        if not has_permission(uid, "manage_topics"):
+            await update.message.reply_text("⛔ اجازه نداری!", reply_markup=get_main_keyboard(uid))
+            context.user_data.clear()
+            return
+        context.user_data["topic_name"] = text
+        context.user_data["state"] = "waiting_topic_text"
+        await update.message.reply_text(
+            f"✅ اسم موضوع: {text}\n\n"
+            "حالا متن کامل موضوع رو بفرست:\n"
+            "(این متن بالای پست میاد)\n\n"
+            "برای لغو بنویس: لغو"
+        )
+        return
+    if state == "waiting_topic_text":
+        if not has_permission(uid, "manage_topics"):
+            await update.message.reply_text("⛔ اجازه نداری!", reply_markup=get_main_keyboard(uid))
+            context.user_data.clear()
+            return
+        name = context.user_data.get("topic_name", "")
+        if not name:
+            await update.message.reply_text("❌ خطا! دوباره شروع کن.", reply_markup=get_main_keyboard(uid))
+            context.user_data.clear()
+            return
+        existed = name in TOPICS
+        TOPICS[name] = text
+        save_texts()
+        if context.user_data.get("ready_mode"):
+            # If a topic is added during the "با موضوع" flow,
+            # use the newly created/updated topic immediately.
+            context.user_data["post_mode"] = "topic"
+            context.user_data["selected_topic"] = name
+            context.user_data.pop("state", None)
+            context.user_data.pop("topic_name", None)
+            await update.message.reply_text(
+                f"✅ موضوع {name} {'جایگزین شد' if existed else 'اضافه شد'}!\n\n"
+                f"📝 {text}\n\n"
+                "⬇️ حالا لینک رو بده یا بنویس تمام:",
+                reply_markup=MULTI_POST_KEYBOARD
+            )
+        else:
+            await update.message.reply_text(
+                f"✅ موضوع {name} {'جایگزین شد' if existed else 'اضافه شد'}!\n\n"
+                f"📝 {text}\n\n"
+                "حالا از 🎯 آماده‌سازی می‌تونی استفاده کنی.",
+                reply_markup=get_main_keyboard(uid)
+            )
+            context.user_data.clear()
+        return
+    if state == "waiting_link_text":
+        if not has_permission(uid, "add_text"):
+            await update.message.reply_text("⛔ اجازه نداری!", reply_markup=get_main_keyboard(uid))
+            context.user_data.clear()
+            return
+        context.user_data["temp_link_text"] = text
+        context.user_data["state"] = "waiting_linked_word"
+        await update.message.reply_text(
+            f"✅ متن پایین دریافت شد.\n\n"
+            "حالا بگو کدوم کلمه لینک بشه:\n\n"
+            f"{text}\n\n"
+            "(برای لغو بنویس: لغو)"
+        )
+        return
+    if state == "waiting_linked_word":
+        if not has_permission(uid, "add_text"):
+            await update.message.reply_text("⛔ اجازه نداری!", reply_markup=get_main_keyboard(uid))
+            context.user_data.clear()
+            return
+        link_text = context.user_data.get("temp_link_text", "")
+        if text not in link_text:
+            await update.message.reply_text(
+                f"❌ کلمه {text} توی متن پیدا نشد!\n\n"
+                f"متن: {link_text}\n\n"
+                "دوباره بگو:\n(برای لغو بنویس: لغو)"
+            )
+            return
+        context.user_data["temp_linked_word"] = text
+        context.user_data["state"] = "waiting_name"
+        await update.message.reply_text(
+            f"✅ کلمه لینک‌شده: {text}\n\n"
+            "حالا یه اسم برای این قالب بذار:\n"
+            "(مثلاً: p2, پک-جدید)\n\n"
+            "(برای لغو بنویس: لغو)"
+        )
+        return
+    if state == "waiting_name":
+        if not has_permission(uid, "add_text"):
+            await update.message.reply_text("⛔ اجازه نداری!", reply_markup=get_main_keyboard(uid))
+            context.user_data.clear()
+            return
+        if text in ALL_TEXTS:
+            await update.message.reply_text(
+                f"❌ اسم {text} قبلاً هست! یه اسم دیگه:\n"
+                "(برای لغو بنویس: لغو)"
+            )
+            return
+        link_text = context.user_data.get("temp_link_text", "")
+        linked_word = context.user_data.get("temp_linked_word", "")
+        ALL_TEXTS[text] = {
+            "header": "",
+            "link_text": link_text,
+            "linked_word": linked_word,
+            "footer": "",
+            "random_headers": [],
+            "blockquote": False,
+            "title": ""
+        }
+        save_texts()
+        await update.message.reply_text(
+            f"✅ قالب {text} ساخته شد!\n\n"
+            f"🔗 {link_text}\n\n"
+            "🎲 حالا از 📋 لیست متن‌ها → قالب «{text}» → ➕ افزودن متن رندوم\n"
+            "متن‌های بالای پست رو اضافه کن.",
+            reply_markup=get_main_keyboard(uid)
+        )
+        context.user_data.clear()
+        return
+    if text == "🎯 آماده‌سازی":
+        await ready_cmd(update, context)
+        return
+    if text == "📋 لیست متن‌ها":
+        await list_cmd(update, context)
+        return
+    if text == "⚡ پست سریع":
+        await quick_post_cmd(update, context)
+        return
+    if text == "🧩 مدیریت قالب‌ها":
+        await template_manager_cmd(update, context)
+        return
+    if text == "➕ افزودن متن":
+        if not has_permission(uid, "add_text"):
+            await update.message.reply_text("⛔ اجازه افزودن متن رو نداری!", reply_markup=get_main_keyboard(uid))
+            return
+        context.user_data["state"] = "waiting_link_text"
+        await update.message.reply_text(
+            "📝 ساخت قالب جدید:\n\n"
+            "متن پایین رو بفرست:\n\n"
+            "مثال:\nDownLoad مشـ.ـاهده 📥\n\n"
+            "برای لغو بنویس: لغو"
+        )
+        return
+    if text == "📁 نهایی":
+        await final_menu_cmd(update, context)
+        return
+
+    if text == "📁 پست‌های من":
+        await my_posts_cmd(update, context)
+        return
+    matches = LINK_REGEX.findall(text)
+    if not matches:
+        if context.user_data.get("ready_mode"):
+            await update.message.reply_text(
+                "❓ لینک ندیدم! لینک بده یا بنویس تمام",
+                reply_markup=MULTI_POST_KEYBOARD
+            )
+            return
+        await update.message.reply_text("❓ لینک ندیدم!", reply_markup=get_main_keyboard(uid))
+        return
+    url = matches[0]
+
+    # =====================================================
+    # QUICK MODE: use only the selected section's templates.
+    # =====================================================
+    if context.user_data.get("quick_mode"):
+        group = context.user_data.get("quick_group", "")
+        if not group or not section_enabled(group):
+            context.user_data.pop("quick_mode", None)
+            context.user_data.pop("quick_group", None)
+            await update.message.reply_text("⛔ بخش پست سریع خاموش شده است.", reply_markup=get_main_keyboard(uid))
+            return
+        keys=[k for k in TEMPLATE_GROUPS.get(group,[]) if k in ALL_TEXTS]
+        if not keys:
+            context.user_data.pop("quick_mode", None)
+            context.user_data.pop("quick_group", None)
+            await update.message.reply_text("📭 این بخش دیگر قالبی ندارد.", reply_markup=get_main_keyboard(uid))
+            return
+        urls=[normalize_link(x) for x in LINK_REGEX.findall(text or "")]
+        urls=list(dict.fromkeys(urls))
+        if urls:
+            cursor_state=TOPIC_VARIANTS.setdefault("__quick_cursor__", {})
+            cursor=int(cursor_state.get(group,0))
+            results=[]
+            for url in urls:
+                key=keys[cursor % len(keys)]
+                cursor += 1
+                try:
+                    header, link_text, linked_word, result=build_post_result(url, key, topic_name=None)
+                    add_post(uid, header, link_text, linked_word, url, result)
+                    results.append(result)
+                except Exception as e:
+                    results.append(f"❌ خطا برای {url}: {e}")
+            cursor_state[group]=cursor
+            save_json(TOPIC_VARIANTS_FILE, TOPIC_VARIANTS)
+            for result in results:
+                await update.message.reply_text(result, parse_mode="HTML", disable_web_page_preview=True)
+            return
+
+    # =====================================================
+    # AUTO MODE: if the link was classified by the second bot,
+    # build the post immediately. No template/topic selection
+    # is required in the main bot.
+    # =====================================================
+    mapped = get_link_mapping(url)
+    if mapped:
+        if not has_permission(uid, "ready"):
+            await update.message.reply_text(
+                "⛔ اجازه ساخت پست رو نداری!",
+                reply_markup=get_main_keyboard(uid)
+            )
+            return
+
+        if _USER_LOCKS.get(uid):
+            await update.message.reply_text("⏳ قبلاً در حال پردازش یک لینک هستی.")
+            return
+
+        selected_template_key = choose_template_for_link(mapped)
+        if selected_template_key not in ALL_TEXTS:
+            await update.message.reply_text(
+                "❌ برای این نوع و مدل هنوز قالبی ثبت نشده.\n\n"
+                f"نوع: {mapped.get('category') or '—'}\n"
+                f"مدل: {mapped.get('subcategory') or '—'}",
+                reply_markup=get_main_keyboard(uid)
+            )
+            return
+
+        _USER_LOCKS[uid] = True
+        try:
+            # If this template has a manually assigned title, that title is
+            # authoritative. Do NOT pass the automatic topic/category header
+            # into the builder, otherwise the old topic header can appear
+            # together with the custom title (or override it in older logic).
+            custom_title = str(ALL_TEXTS.get(selected_template_key, {}).get("title", "") or "").strip()
+            topic_name = None if custom_title else (mapped.get("topic_name") or mapped.get("category") or None)
+            header, link_text, linked_word, result = build_post_result(
+                url,
+                selected_template_key,
+                topic_name=topic_name
+            )
+            add_post(uid, header, link_text, linked_word, url, result)
+
+            await update.message.reply_text(
+                result,
+                parse_mode="HTML",
+                disable_web_page_preview=True
+            )
+            await update.message.reply_text(
+                "✅ پست ساخته شد!\n\n🔗 لینک بعدی رو بفرست.",
+                reply_markup=get_main_keyboard(uid)
+            )
+        except NetworkError:
+            await update.message.reply_text(
+                "⚠️ مشکل شبکه پیش آمد. دوباره امتحان کن.",
+                reply_markup=get_main_keyboard(uid)
+            )
+        except Exception as e:
+            await update.message.reply_text(
+                f"❌ خطا: {str(e)}",
+                reply_markup=get_main_keyboard(uid)
+            )
+        finally:
+            _USER_LOCKS[uid] = False
+        return
+
+    # No bridge record: keep the old preparation flow as a fallback.
+    if context.user_data.get("ready_mode"):
+        if not has_permission(uid, "ready"):
+            await update.message.reply_text(
+                "⛔ اجازه ساخت پست رو نداری!",
+                reply_markup=get_main_keyboard(uid)
+            )
+            return
+
+        post_mode = context.user_data.get("post_mode")
+        if post_mode not in {"topic", "no_topic"}:
+            await update.message.reply_text(
+                "🎯 این لینک هنوز از ربات دوم دسته‌بندی نشده.\n\n"
+                "اگر می‌خواهی خودکار ساخته شود، اول لینک را در ربات دوم ثبت کن.",
+                reply_markup=get_main_keyboard(uid)
+            )
+            return
+
+        topic_name = context.user_data.get("selected_topic") if post_mode == "topic" else None
+        selected_template_key = ACTIVE_KEY
+        if post_mode == "no_topic":
+            selected_template_key = ACTIVE_KEY
+
+        # A custom title replaces the topic title completely.
+        custom_title = str(ALL_TEXTS.get(selected_template_key, {}).get("title", "") or "").strip()
+        if custom_title:
+            topic_name = None
+
+        try:
+            header, link_text, linked_word, result = build_post_result(
+                url, selected_template_key, topic_name=topic_name
+            )
+            add_post(uid, header, link_text, linked_word, url, result)
+            await update.message.reply_text(result, parse_mode="HTML", disable_web_page_preview=True)
+            await update.message.reply_text("✅ پست ساخته شد!", reply_markup=get_main_keyboard(uid))
+        except Exception as e:
+            await update.message.reply_text(f"❌ خطا: {str(e)}", reply_markup=get_main_keyboard(uid))
+        return
+
+    await update.message.reply_text(
+        "⚠️ این لینک هنوز توسط ربات دوم دسته‌بندی نشده.\n\n"
+        "اول لینک را در ربات دوم ثبت کن، نوع و مدل را انتخاب کن؛ بعد همین لینک را اینجا بفرست.",
+        reply_markup=get_main_keyboard(uid)
+    )
+    return
+
+    # If this URL was registered by the second bot, automatically choose
+    # the matching category template. Otherwise keep the old active-template flow.
+    mapping = get_link_mapping(url)
+    auto_key = choose_template_for_link(mapping) if mapping else ACTIVE_KEY
+    template = ALL_TEXTS.get(auto_key)
+    if not template:
+        await update.message.reply_text(
+            "📭 قالب مناسب پیدا نشد. اول برای این موضوع قالب بساز.",
+            reply_markup=get_main_keyboard(uid)
+        )
+        return
+    link_text = template.get("link_text", "download")
+    linked_word = template.get("linked_word", "")
+    footer = template.get("footer", "")
+    rh = template.get("random_headers", [])
+    bq = template.get("blockquote", False)
+    if rh:
+        header = random.choice(rh)
+    else:
+        header = ""
+    if linked_word and linked_word in link_text:
+        parts = link_text.split(linked_word, 1)
+        link_anchor = f'<a href="{url}">{escape(linked_word)}</a>'
+        if bq:
+            link_anchor = f"<blockquote>{link_anchor}</blockquote>"
+        link_part = f"{escape(parts[0])}{link_anchor}{escape(parts[1])}"
+    else:
+        link_part = f'<a href="{url}">{escape(link_text)}</a>'
+        if bq:
+            link_part = f"<blockquote>{link_part}</blockquote>"
+    parts_list = []
+    if header:
+        parts_list.append(f"<b>{escape(header)}</b>")
+    parts_list.append(link_part)
+    if footer:
+        parts_list.append(escape(footer))
+    result = "\n".join(parts_list)
+    result = preserve_spaces(result)
+    add_post(update.effective_user.id, header, link_text, linked_word, url, result)
+    try:
+        await update.message.reply_text(result, parse_mode="HTML", disable_web_page_preview=True)
+    except NetworkError:
+        await update.message.reply_text(
+            "⚠️ پست ساخته شد ولی به خاطر مشکل اینترنت نتونستم بفرستم.",
+            reply_markup=get_main_keyboard(uid)
+        )
+
+# ═══════════════════════════════════════════════════
+async def post_init(app):
+    # Show these commands in Telegram's Menu button.
+    await app.bot.set_my_commands([
+        ("start", "استارت ربات"),
+        ("backup", "گرفتن بکاپ از اطلاعات ربات"),
+    ])
+
+
+def main():
+    if not TOKEN:
+        raise RuntimeError("❌ BOT_TOKEN در Railway تنظیم نشده است.")
+    print(f"📁 Data folder: {DATA_DIR}")
+    print(f"📄 Texts file: {TEXTS_FILE} ({os.path.getsize(TEXTS_FILE) if os.path.exists(TEXTS_FILE) else 'new'})")
+    print(f"📄 Topics file: {TOPICS_FILE} ({os.path.getsize(TOPICS_FILE) if os.path.exists(TOPICS_FILE) else 'new'})")
+    print(f"📄 Admins file: {ADMINS_FILE} ({os.path.getsize(ADMINS_FILE) if os.path.exists(ADMINS_FILE) else 'new'})")
+    print(f"📄 Posts file: {POSTS_FILE} ({os.path.getsize(POSTS_FILE) if os.path.exists(POSTS_FILE) else 'new'})")
+    print(f"📄 Link registry: {LINK_REGISTRY_FILE} ({os.path.getsize(LINK_REGISTRY_FILE) if os.path.exists(LINK_REGISTRY_FILE) else 'new'})")
+    print(f"📄 Template groups: {TEMPLATE_GROUPS_FILE} ({os.path.getsize(TEMPLATE_GROUPS_FILE) if os.path.exists(TEMPLATE_GROUPS_FILE) else 'new'})")
+    print(f"📄 Section settings: {SECTION_SETTINGS_FILE} ({os.path.getsize(SECTION_SETTINGS_FILE) if os.path.exists(SECTION_SETTINGS_FILE) else 'new'})")
+    print(f"🔑 Link bridge key: {LINK_BRIDGE_KEY}")
+    start_link_bridge_server()
+    app = Application.builder().token(TOKEN).post_init(post_init).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("backup", backup_cmd))
+    app.add_handler(CommandHandler("add", add_cmd))
+    app.add_handler(CommandHandler("list", list_cmd))
+    app.add_handler(CommandHandler("ready", ready_cmd))
+    app.add_handler(CommandHandler("myposts", my_posts_cmd))
+    app.add_handler(CallbackQueryHandler(callback))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    print("🤖 استارت شد...")
+    app.run_polling()
+
+if __name__ == "__main__":
+    main()
