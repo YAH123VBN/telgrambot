@@ -1247,6 +1247,10 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.edit_message_text("📭 این بخش قالبی ندارد.")
             return
         reset_title_bank_progress(g)
+        try:
+            await q.answer("✅ ریست شد — دور بعدی از تنظیم عنوان همه شروع می‌شه.", show_alert=True)
+        except Exception:
+            pass
         context.user_data["quick_mode"] = True
         context.user_data["quick_group"] = g
         buttons = [[InlineKeyboardButton("🔄 ریست (برگشت به تنظیم عنوان همه)", callback_data=f"quickreset:{g}")]]
