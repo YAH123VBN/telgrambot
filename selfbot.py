@@ -1079,6 +1079,7 @@ async def show_section(q, g):
     if keys:
         buttons.append([InlineKeyboardButton("🏷️ بانک کلمات", callback_data=f"titlebank:{g}")])
         buttons.append([InlineKeyboardButton("🏷️ تنظیم عنوان همه", callback_data=f"titles_all:{g}")])
+        buttons.append([InlineKeyboardButton("👁️ مشاهده عنوان‌های تنظیم‌شده", callback_data=f"titles_all_view:{g}")])
     else:
         buttons.append([InlineKeyboardButton("📭 این بخش فعلاً خالی است", callback_data="noop")])
     buttons.append([InlineKeyboardButton(f"{'⛔ خاموش کردن' if enabled else '⚡ روشن کردن'} پست سریع این بخش", callback_data=f"quicktoggle:{g}")])
@@ -1304,6 +1305,45 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "برای لغو: لغو"
         )
         await q.edit_message_text(msg)
+        return
+
+    if data.startswith("titles_all_view:"):
+        if not has_permission(uid, "list"):
+            await q.edit_message_text("⛔ اجازه نداری!")
+            return
+        g = data[len("titles_all_view:"):]
+        keys = [k for k in TEMPLATE_GROUPS.get(g, []) if k in ALL_TEXTS]
+        if not keys:
+            await q.edit_message_text("📭 این بخش قالبی ندارد.")
+            return
+        entries = []
+        for k in keys:
+            title = str(ALL_TEXTS[k].get("title", "") or "").strip()
+            entries.append(f"📝 {k}:\n{title if title else '— (بدون عنوان) —'}")
+
+        header = f"👁️ عنوان‌های تنظیم‌شده — {section_title(g)}\n"
+        buttons = [[InlineKeyboardButton("🔙 بازگشت", callback_data=f"section:{g}")]]
+
+        # Telegram caps messages at 4096 chars; split into multiple messages
+        # if the section has enough templates to exceed that.
+        chunks, current = [], header
+        for entry in entries:
+            candidate = current + "\n\n" + entry if current else entry
+            if len(candidate) > 3500:
+                chunks.append(current)
+                current = entry
+            else:
+                current = candidate
+        if current:
+            chunks.append(current)
+
+        if len(chunks) == 1:
+            await q.edit_message_text(chunks[0], reply_markup=InlineKeyboardMarkup(buttons))
+        else:
+            await q.edit_message_text(chunks[0])
+            for extra in chunks[1:-1]:
+                await q.message.reply_text(extra)
+            await q.message.reply_text(chunks[-1], reply_markup=InlineKeyboardMarkup(buttons))
         return
 
     if data.startswith("quicktoggle:"):
