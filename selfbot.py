@@ -1374,7 +1374,12 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             entries.append(f"📝 {k}:\n{title if title else '— (بدون عنوان) —'}")
 
         header = f"👁️ عنوان‌های تنظیم‌شده — {section_title(g)}\n"
-        buttons = [[InlineKeyboardButton("🔙 بازگشت", callback_data=f"section:{g}")]]
+        buttons = [
+            [InlineKeyboardButton("✏️ ویرایش عنوان‌ها", callback_data=f"titles_all_edit:{g}")],
+            [InlineKeyboardButton("🗑️ حذف عنوان یک قالب", callback_data=f"titles_all_delone:{g}")],
+            [InlineKeyboardButton("🗑️🗑️ حذف همه عنوان‌ها", callback_data=f"titles_all_delall_confirm:{g}")],
+            [InlineKeyboardButton("🔙 بازگشت", callback_data=f"section:{g}")],
+        ]
 
         # Telegram caps messages at 4096 chars; split into multiple messages
         # if the section has enough templates to exceed that.
@@ -1396,6 +1401,136 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for extra in chunks[1:-1]:
                 await q.message.reply_text(extra)
             await q.message.reply_text(chunks[-1], reply_markup=InlineKeyboardMarkup(buttons))
+        return
+
+    if data.startswith("titles_all_edit:"):
+        if not has_permission(uid, "list"):
+            await q.edit_message_text("⛔ اجازه نداری!")
+            return
+        g = data[len("titles_all_edit:"):]
+        keys = [k for k in TEMPLATE_GROUPS.get(g, []) if k in ALL_TEXTS]
+        if not keys:
+            await q.edit_message_text("📭 این بخش قالبی ندارد.")
+            return
+        context.user_data.clear()
+        context.user_data["state"] = "titles_all_edit"
+        context.user_data["titles_edit_group"] = g
+        context.user_data["titles_edit_keys"] = keys
+
+        listing = []
+        for i, k in enumerate(keys, start=1):
+            title = str(ALL_TEXTS[k].get("title", "") or "").strip()
+            listing.append(f"{i}) {k}: {title if title else '— (بدون عنوان) —'}")
+
+        header = (
+            f"✏️ ویرایش عنوان‌ها — {section_title(g)}\n\n"
+            "لیست فعلی به ترتیب پایین اومده. حالا همین تعداد خط بفرست (به همون ترتیب):\n"
+            "• هر خط = عنوان جدید همون شماره.\n"
+            "• هر خط رو خالی بفرستی (فقط Enter رد کنی)، همون قالب دست‌نخورده می‌مونه — فرقی نداره خط چندم باشه.\n\n"
+        )
+        chunks, current = [], header
+        for line in listing:
+            candidate = current + line + "\n" if current else line + "\n"
+            if len(candidate) > 3500:
+                chunks.append(current)
+                current = line + "\n"
+            else:
+                current = candidate
+        if current:
+            chunks.append(current)
+
+        await q.edit_message_text(chunks[0])
+        for extra in chunks[1:]:
+            await q.message.reply_text(extra)
+        await q.message.reply_text("برای لغو: لغو")
+        return
+
+    if data.startswith("titles_all_delone:"):
+        if not has_permission(uid, "list"):
+            await q.edit_message_text("⛔ اجازه نداری!")
+            return
+        g = data[len("titles_all_delone:"):]
+        keys = [k for k in TEMPLATE_GROUPS.get(g, []) if k in ALL_TEXTS]
+        if not keys:
+            await q.edit_message_text("📭 این بخش قالبی ندارد.")
+            return
+        buttons = []
+        for k in keys:
+            title = str(ALL_TEXTS[k].get("title", "") or "").strip()
+            label = f"{k} ({title[:15]})" if title else f"{k} (بدون عنوان)"
+            buttons.append([InlineKeyboardButton(label, callback_data=f"titles_all_delone_do:{g}:{k}")])
+        buttons.append([InlineKeyboardButton("🔙 بازگشت", callback_data=f"titles_all_view:{g}")])
+        await q.edit_message_text(
+            f"🗑️ حذف عنوان یک قالب — {section_title(g)}\n\nقالب موردنظر را انتخاب کن:",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
+        return
+
+    if data.startswith("titles_all_delone_do:"):
+        if not has_permission(uid, "list"):
+            await q.edit_message_text("⛔ اجازه نداری!")
+            return
+        parts = data.split(":", 2)
+        if len(parts) != 3:
+            await q.edit_message_text("❌ خطا در انتخاب قالب.")
+            return
+        _, g, k = parts
+        item = ALL_TEXTS.get(k)
+        if not item:
+            await q.edit_message_text("❌ قالب پیدا نشد.")
+            return
+        item["title"] = ""
+        item["header"] = ""
+        item["random_headers"] = []
+        save_texts()
+        buttons = [[InlineKeyboardButton("🔙 بازگشت به لیست", callback_data=f"titles_all_view:{g}")]]
+        await q.edit_message_text(
+            f"✅ عنوان قالب «{k}» پاک شد.",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
+        return
+
+    if data.startswith("titles_all_delall_confirm:"):
+        if not has_permission(uid, "list"):
+            await q.edit_message_text("⛔ اجازه نداری!")
+            return
+        g = data[len("titles_all_delall_confirm:"):]
+        keys = [k for k in TEMPLATE_GROUPS.get(g, []) if k in ALL_TEXTS]
+        if not keys:
+            await q.edit_message_text("📭 این بخش قالبی ندارد.")
+            return
+        await q.edit_message_text(
+            f"⚠️ مطمئنی می‌خوای عنوان همه‌ی {len(keys)} قالب «{section_title(g)}» پاک بشه؟\n\n"
+            "این کار قابل برگشت نیست.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🗑️🗑️ بله، همه رو پاک کن", callback_data=f"titles_all_delall_yes:{g}")],
+                [InlineKeyboardButton("❌ لغو", callback_data=f"titles_all_view:{g}")]
+            ])
+        )
+        return
+
+    if data.startswith("titles_all_delall_yes:"):
+        if not has_permission(uid, "list"):
+            await q.edit_message_text("⛔ اجازه نداری!")
+            return
+        g = data[len("titles_all_delall_yes:"):]
+        keys = [k for k in TEMPLATE_GROUPS.get(g, []) if k in ALL_TEXTS]
+        if not keys:
+            await q.edit_message_text("📭 این بخش قالبی ندارد.")
+            return
+        for k in keys:
+            item = ALL_TEXTS.get(k)
+            if not item:
+                continue
+            item["title"] = ""
+            item["header"] = ""
+            item["random_headers"] = []
+        save_texts()
+        buttons = [[InlineKeyboardButton("🔙 بازگشت به لیست", callback_data=f"titles_all_view:{g}")]]
+        await q.edit_message_text(
+            f"✅ عنوان همه‌ی {len(keys)} قالب «{section_title(g)}» پاک شد.",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
         return
 
     if data.startswith("quicktoggle:"):
@@ -2803,6 +2938,50 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_texts(); context.user_data.clear()
         await update.message.reply_text(
             f"✅ عنوان {changed} قالب تغییر کرد.\n📌 بقیه‌ی قالب‌های این بخش دست‌نخورده ماندند.",
+            reply_markup=get_main_keyboard(uid)
+        )
+        return
+
+    if state == "titles_all_edit":
+        if not has_permission(uid, "list"):
+            context.user_data.clear(); await update.message.reply_text("⛔ اجازه نداری!", reply_markup=get_main_keyboard(uid)); return
+        if text in {"لغو", "❌ لغو"}:
+            context.user_data.clear(); await update.message.reply_text("❌ لغو شد.", reply_markup=get_main_keyboard(uid)); return
+        g = context.user_data.get("titles_edit_group")
+        keys = context.user_data.get("titles_edit_keys", [])
+        # Preserve blank lines exactly by position — a blank line means
+        # "leave this template's title untouched", no matter which
+        # position (1st, 21st, last...) it falls on.
+        lines = text.splitlines()
+        changed = 0
+        skipped = 0
+        for i, key in enumerate(keys):
+            line = lines[i].strip() if i < len(lines) else ""
+            if not line:
+                skipped += 1
+                continue
+            item = ALL_TEXTS.get(key)
+            if not item:
+                continue
+            new_title = line
+
+            # Same title/link_text shape-detection as bulk "تنظیم عنوان همه":
+            # only drop a leading title-like line from link_text if the body
+            # actually has that shape; otherwise leave link_text untouched.
+            link_text = str(item.get("link_text", "") or "")
+            body_lines = link_text.splitlines(keepends=True)
+            if len(body_lines) >= 2 and body_lines[0].strip() and not body_lines[1].strip():
+                del body_lines[0]
+                item["link_text"] = "".join(body_lines)
+
+            item["title"] = new_title
+            item["header"] = ""
+            item["random_headers"] = []
+            changed += 1
+        save_texts(); context.user_data.clear()
+        await update.message.reply_text(
+            f"✅ عنوان {changed} قالب تغییر کرد.\n"
+            f"📌 {skipped} قالب چون خط خالی بود، دست‌نخورده موند.",
             reply_markup=get_main_keyboard(uid)
         )
         return
