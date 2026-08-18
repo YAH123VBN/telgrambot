@@ -237,6 +237,16 @@ def _title_bank_entry(g, k):
     except (TypeError, ValueError):
         entry["cursor"] = 0
     entry["first_used"] = bool(entry.get("first_used", False))
+    # "order" is the current reading order (a permutation of indices into
+    # "items"). The first pass through a bank always reads items 0..N-1 in
+    # their stored order; once that pass is exhausted, choose_post_title()
+    # reshuffles this into a new pattern instead of repeating the same
+    # sequence or stopping. Any time the item count changes (items added),
+    # this is invalid and gets rebuilt fresh (sequential) automatically.
+    order = entry.get("order")
+    n = len(entry["items"])
+    if not isinstance(order, list) or sorted(order) != list(range(n)):
+        entry["order"] = list(range(n))
     return entry
 
 
@@ -261,8 +271,18 @@ def choose_post_title(template_key):
     """
     Title selection for real posts:
       1) first use of a template in a section -> current 'تنظیم عنوان همه' title
-      2) later uses -> next item from that template's bank, without repetition
-      3) when the bank is exhausted -> no title is repeated
+      2) later uses -> next item from that template's bank, in the bank's
+         stored order (item #1, #2, #3, ...), without repetition
+      3) once every item in the bank has been used once (the bank is
+         "exhausted") -> instead of stopping or looping back to the exact
+         same order, build a new pattern by reshuffling those same bank
+         items into a fresh (non-sequential) order and start reading that.
+         Every time that shuffled round is finished, it is reshuffled again
+         (never twice in a row identical), so repeated rounds never look
+         like the same repeating sequence, even though the underlying set
+         of texts stays whatever is currently in the bank.
+      4) if the user later adds more items to the bank, they are folded in
+         automatically (see _title_bank_entry) and used going forward.
 
     Returns None when the template is not assigned to a section, so old
     behavior outside sections remains untouched.
@@ -279,15 +299,36 @@ def choose_post_title(template_key):
         return base_title
 
     items = entry.get("items", [])
-    cursor = int(entry.get("cursor", 0))
-    if cursor < len(items):
-        selected = items[cursor]
-        entry["cursor"] = cursor + 1
-        save_title_banks()
-        return selected
+    if not items:
+        # No bank items exist for this template at all.
+        return ""
 
-    # Bank is finite: never go back to the first/manual title and never repeat.
-    return ""
+    cursor = int(entry.get("cursor", 0))
+    order = entry.get("order") or list(range(len(items)))
+
+    if cursor >= len(order):
+        # A full pass (sequential the first time, shuffled every time after)
+        # just finished. Build a new pattern out of the same bank items
+        # instead of repeating the same order or stopping. Also make sure
+        # the very first item of the new pattern isn't the same text as the
+        # very last item just used, so two posts in a row never repeat.
+        last_idx = order[-1] if order else None
+        new_order = list(range(len(items)))
+        if len(new_order) > 1:
+            prev_order = order
+            for _ in range(12):
+                random.shuffle(new_order)
+                if new_order != prev_order and new_order[0] != last_idx:
+                    break
+        entry["order"] = new_order
+        order = new_order
+        cursor = 0
+
+    idx = order[cursor] if 0 <= cursor < len(order) and order[cursor] < len(items) else 0
+    selected = items[idx]
+    entry["cursor"] = cursor + 1
+    save_title_banks()
+    return selected
 
 
 def reset_title_bank_progress(g):
@@ -309,6 +350,7 @@ def reset_title_bank_progress(g):
                 continue
             entry["cursor"] = 0
             entry["first_used"] = False
+            entry["order"] = list(range(len(entry.get("items", []) or [])))
             reset_count += 1
         save_title_banks()
 
@@ -334,6 +376,7 @@ def reset_bank_cursor_only(g):
             if not isinstance(entry, dict):
                 continue
             entry["cursor"] = 0
+            entry["order"] = list(range(len(entry.get("items", []) or [])))
             reset_count += 1
         save_title_banks()
     return reset_count
