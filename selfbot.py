@@ -308,7 +308,7 @@ def reset_title_bank_progress(g):
     return reset_count
 
 
-
+def find_group_for_key(k):
     """Return the section/group key that a template belongs to, or None."""
     for g, keys in TEMPLATE_GROUPS.items():
         if k in keys:
