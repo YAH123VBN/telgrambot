@@ -293,18 +293,49 @@ def choose_post_title(template_key):
 def reset_title_bank_progress(g):
     """Reset bank progress (not the stored items) for every template in a
     section, so the next quick-post round starts again from 'تنظیم عنوان
-    همه' instead of continuing mid-way through each template's bank."""
+    همه' instead of continuing mid-way through each template's bank.
+
+    Also resets the quick-post round-robin position for this section back
+    to 0, so the very next link goes to the first template in the section
+    (not wherever the round-robin had gotten to) — otherwise the title
+    reset above would be right but the template order would still be
+    mid-cycle.
+    """
     section = TITLE_BANKS.get(g)
-    if not isinstance(section, dict):
-        return 0
     reset_count = 0
-    for k, entry in section.items():
-        if not isinstance(entry, dict):
-            continue
-        entry["cursor"] = 0
-        entry["first_used"] = False
-        reset_count += 1
-    save_title_banks()
+    if isinstance(section, dict):
+        for k, entry in section.items():
+            if not isinstance(entry, dict):
+                continue
+            entry["cursor"] = 0
+            entry["first_used"] = False
+            reset_count += 1
+        save_title_banks()
+
+    cursor_state = TOPIC_VARIANTS.setdefault("__quick_cursor__", {})
+    cursor_state[g] = 0
+    save_json(TOPIC_VARIANTS_FILE, TOPIC_VARIANTS)
+
+    return reset_count
+
+
+def reset_bank_cursor_only(g):
+    """Reset ONLY each template's bank position (which bank item comes
+    next) back to item #1, for every template in a section — independent
+    of reset_title_bank_progress(). Does NOT touch 'first_used' and does
+    NOT touch the quick-post round-robin template order; a template that
+    is currently mid-bank will just start re-reading its own bank from
+    the top the next time its turn comes, still using bank titles (not
+    falling back to 'تنظیم عنوان همه')."""
+    section = TITLE_BANKS.get(g)
+    reset_count = 0
+    if isinstance(section, dict):
+        for k, entry in section.items():
+            if not isinstance(entry, dict):
+                continue
+            entry["cursor"] = 0
+            reset_count += 1
+        save_title_banks()
     return reset_count
 
 
@@ -1222,13 +1253,17 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         context.user_data["quick_mode"] = True
         context.user_data["quick_group"] = g
-        buttons = [[InlineKeyboardButton("🔄 ریست (برگشت به تنظیم عنوان همه)", callback_data=f"quickreset:{g}")]]
+        buttons = [
+            [InlineKeyboardButton("🔄 ریست (برگشت به تنظیم عنوان همه)", callback_data=f"quickreset:{g}")],
+            [InlineKeyboardButton("🏦 ریست بانک (شروع بانک از اول)", callback_data=f"quickresetbank:{g}")],
+        ]
         await q.edit_message_text(
             f"⚡ پست سریع فعال شد: {section_title(g)}\n\n"
             f"📦 {len(keys)} قالب در صف این بخش است.\n"
             "حالا فقط لینک‌ها را بفرست یا پیام‌های ربات دوم را Forward کن.\n"
             "هر لینک = یک پست.\n\n"
-            "اگر اشتباهی پیش اومد و می‌خوای دوباره از عنوان‌های «تنظیم عنوان همه» شروع کنی (نه از وسط بانک کلمات)، روی ریست بزن.\n\n"
+            "اگر اشتباهی پیش اومد و می‌خوای دوباره از عنوان‌های «تنظیم عنوان همه» شروع کنی (نه از وسط بانک کلمات)، روی ریست بزن.\n"
+            "اگر فقط می‌خوای بانک کلمات هر قالب از متن شماره ۱ خودش دوباره شروع بشه (بدون برگشتن به تنظیم عنوان همه و بدون تغییر نوبت قالب‌ها)، روی ریست بانک بزن.\n\n"
             "برای خروج: لغو",
             reply_markup=InlineKeyboardMarkup(buttons)
         )
@@ -1253,10 +1288,47 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
         context.user_data["quick_mode"] = True
         context.user_data["quick_group"] = g
-        buttons = [[InlineKeyboardButton("🔄 ریست (برگشت به تنظیم عنوان همه)", callback_data=f"quickreset:{g}")]]
+        buttons = [
+            [InlineKeyboardButton("🔄 ریست (برگشت به تنظیم عنوان همه)", callback_data=f"quickreset:{g}")],
+            [InlineKeyboardButton("🏦 ریست بانک (شروع بانک از اول)", callback_data=f"quickresetbank:{g}")],
+        ]
         await q.edit_message_text(
             f"✅ ریست شد: {section_title(g)}\n\n"
-            "همه‌ی قالب‌های این بخش دوباره از عنوان «تنظیم عنوان همه» شروع می‌کنن؛ بانک کلمات دست‌نخورده مونده و ترتیبش از اول همون‌جا ادامه پیدا می‌کنه که بعد از این ریست به آن‌ها رسید.\n\n"
+            "همه‌ی قالب‌های این بخش دوباره از عنوان «تنظیم عنوان همه» شروع می‌کنن و نوبت قالب‌ها هم از قالب اول شروع می‌شه؛ بانک کلمات هر قالب دست‌نخورده مونده (فقط از اول دوباره خونده می‌شه، وقتی نوبتش برسه).\n\n"
+            f"📦 {len(keys)} قالب در صف این بخش است.\n"
+            "حالا فقط لینک‌ها را بفرست یا پیام‌های ربات دوم را Forward کن.\n"
+            "هر لینک = یک پست.\n\n"
+            "برای خروج: لغو",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
+        return
+
+    if data.startswith("quickresetbank:"):
+        if not has_permission(uid, "ready"):
+            await q.edit_message_text("⛔ اجازه نداری!")
+            return
+        g = data[len("quickresetbank:"):]
+        if not section_enabled(g):
+            await q.edit_message_text("⛔ این بخش برای پست سریع خاموش است.")
+            return
+        keys = [k for k in TEMPLATE_GROUPS.get(g, []) if k in ALL_TEXTS]
+        if not keys:
+            await q.edit_message_text("📭 این بخش قالبی ندارد.")
+            return
+        reset_bank_cursor_only(g)
+        try:
+            await q.answer("✅ بانک ریست شد — هر قالب دوباره از متن شماره ۱ بانک خودش شروع می‌کنه.", show_alert=True)
+        except Exception:
+            pass
+        context.user_data["quick_mode"] = True
+        context.user_data["quick_group"] = g
+        buttons = [
+            [InlineKeyboardButton("🔄 ریست (برگشت به تنظیم عنوان همه)", callback_data=f"quickreset:{g}")],
+            [InlineKeyboardButton("🏦 ریست بانک (شروع بانک از اول)", callback_data=f"quickresetbank:{g}")],
+        ]
+        await q.edit_message_text(
+            f"✅ بانک ریست شد: {section_title(g)}\n\n"
+            "نوبت قالب‌ها و «اولین‌بار از تنظیم عنوان همه» بودنشون دست‌نخورده مونده؛ فقط بانک هر قالب از متن شماره ۱ خودش دوباره شروع می‌شه.\n\n"
             f"📦 {len(keys)} قالب در صف این بخش است.\n"
             "حالا فقط لینک‌ها را بفرست یا پیام‌های ربات دوم را Forward کن.\n"
             "هر لینک = یک پست.\n\n"
