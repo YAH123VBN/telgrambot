@@ -872,12 +872,18 @@ async def show_section(q, g):
         buttons.append([InlineKeyboardButton("📦 افزودن قالب موجود به این بخش", callback_data=f"section_add_template:{g}")])
     else:
         buttons.append([InlineKeyboardButton("➕ افزودن متن", callback_data="tmpl_add")])
+    quote_status = ""
+    if g != "__ungrouped__" and keys:
+        bq_count = sum(1 for k in keys if ALL_TEXTS.get(k, {}).get("blockquote"))
+        quote_status = f"\n💬 نقل‌قول: {bq_count} از {len(keys)} قالب روشن"
+        buttons.append([InlineKeyboardButton("✅ روشن کردن نقل‌قول برای همه بخش", callback_data=f"section_bq_on:{g}")])
+        buttons.append([InlineKeyboardButton("❌ خاموش کردن نقل‌قول برای همه بخش", callback_data=f"section_bq_off:{g}")])
     for k in keys:
         buttons.append([InlineKeyboardButton(f"📝 {k}", callback_data=f"use:{k}")])
         buttons.append([InlineKeyboardButton(f"🗑 حذف {k}", callback_data=f"del:{k}")])
     buttons.append([InlineKeyboardButton("🗑 حذف بخش", callback_data=f"section_del:{g}")]) if g != "__ungrouped__" else None
     buttons.append([InlineKeyboardButton("🔙 لیست بخش‌ها", callback_data="back_list")])
-    await q.edit_message_text(title + f"\n\n📦 {len(keys)} قالب", reply_markup=InlineKeyboardMarkup(buttons))
+    await q.edit_message_text(title + f"\n\n📦 {len(keys)} قالب" + quote_status, reply_markup=InlineKeyboardMarkup(buttons))
 
 async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global ACTIVE_KEY
@@ -1034,6 +1040,43 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         new_state=not section_enabled(g)
         set_section_enabled(g,new_state)
         await show_section(q,g)
+        return
+
+    if data.startswith("section_bq_on:"):
+        if not has_permission(uid, "list"):
+            await q.edit_message_text("⛔ اجازه نداری!")
+            return
+        g = data[len("section_bq_on:"):]
+        keys = [k for k in TEMPLATE_GROUPS.get(g, []) if k in ALL_TEXTS]
+        if not keys:
+            await q.edit_message_text("📭 این بخش قالبی ندارد.")
+            return
+        context.user_data.clear()
+        context.user_data["state"] = "waiting_section_quote_text"
+        context.user_data["quote_section_group"] = g
+        await q.edit_message_text(
+            f"💬 نقل‌قول برای همه — {section_title(g)}\n\n"
+            "کدام کلمه/متن نقل‌قول بشه؟ عین همون کلمه یا عبارت را بفرست.\n"
+            "این کلمه در هر قالبی از این بخش که وجودش را داشته باشد، نقل‌قول می‌شود؛ قالب‌هایی که این کلمه را ندارند دست‌نخورده می‌مانند.\n\n"
+            f"📦 این بخش {len(keys)} قالب دارد.\n\n"
+            "برای لغو: لغو"
+        )
+        return
+
+    if data.startswith("section_bq_off:"):
+        if not has_permission(uid, "list"):
+            await q.edit_message_text("⛔ اجازه نداری!")
+            return
+        g = data[len("section_bq_off:"):]
+        keys = [k for k in TEMPLATE_GROUPS.get(g, []) if k in ALL_TEXTS]
+        for k in keys:
+            ALL_TEXTS[k]["blockquote"] = False
+        save_texts()
+        try:
+            await q.answer(f"نقل‌قول برای {len(keys)} قالب خاموش شد!")
+        except Exception:
+            pass
+        await show_section(q, g)
         return
 
     if data.startswith("section_del:"):
@@ -2091,6 +2134,40 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📄 اصلی: {source}\n"
             f"🏷 نام‌ها: {prefix} 1 تا {prefix} {count}",
             reply_markup=get_main_keyboard(uid)
+        )
+        return
+
+    if state == "waiting_section_quote_text":
+        if not has_permission(uid, "list"):
+            context.user_data.clear(); await update.message.reply_text("⛔ اجازه نداری!", reply_markup=get_main_keyboard(uid)); return
+        if text in {"لغو", "❌ لغو"}:
+            context.user_data.clear(); await update.message.reply_text("❌ لغو شد.", reply_markup=get_main_keyboard(uid)); return
+        g = context.user_data.get("quote_section_group")
+        keys = [k for k in TEMPLATE_GROUPS.get(g, []) if k in ALL_TEXTS]
+        if not g or not keys:
+            context.user_data.clear()
+            await update.message.reply_text("❌ بخش پیدا نشد.", reply_markup=get_main_keyboard(uid))
+            return
+        quote_text = text.strip()
+        changed, skipped = 0, 0
+        for k in keys:
+            body = str(ALL_TEXTS[k].get("link_text", "") or "")
+            if quote_text and quote_text in body:
+                ALL_TEXTS[k]["quote_text"] = quote_text
+                ALL_TEXTS[k]["blockquote"] = True
+                changed += 1
+            else:
+                skipped += 1
+        save_texts()
+        context.user_data.clear()
+        msg = f"✅ نقل‌قول برای {changed} قالب بخش «{section_title(g)}» روشن شد."
+        if skipped:
+            msg += f"\n📌 {skipped} قالب چون این متن را نداشتند، دست‌نخورده ماندند."
+        await update.message.reply_text(
+            msg,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 بازگشت به بخش", callback_data=f"section:{g}")]
+            ])
         )
         return
 
