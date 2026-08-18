@@ -686,10 +686,6 @@ async def list_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         mark = "⚡" if section_enabled(g) else "⛔"
         buttons.append([InlineKeyboardButton(f"📁 {section_title(g)} — {len(keys)} قالب {mark}", callback_data=f"section:{g}")])
 
-    ungrouped = [k for k in sorted(ALL_TEXTS) if not any(k in vals for vals in TEMPLATE_GROUPS.values())]
-    if ungrouped:
-        buttons.append([InlineKeyboardButton(f"📦 بدون بخش — {len(ungrouped)} قالب", callback_data="section:__ungrouped__")])
-
     text = (
         "📋 لیست متن‌ها / قالب‌ها\n\n"
         "📁 هر بخش قالب‌های خودش را دارد.\n"
@@ -701,6 +697,24 @@ async def list_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(buttons))
     else:
         await update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+
+
+async def cleanup_ungrouped_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global ACTIVE_KEY
+    uid = update.effective_user.id
+    if not can_use_bot(uid):
+        await update.message.reply_text("⛔ دسترسی نداری!")
+        return
+    if not has_permission(uid, "list"):
+        await update.message.reply_text("⛔ اجازه نداری!")
+        return
+    ungrouped = [k for k in list(ALL_TEXTS.keys()) if not any(k in vals for vals in TEMPLATE_GROUPS.values())]
+    for k in ungrouped:
+        ALL_TEXTS.pop(k, None)
+    save_texts()
+    if ACTIVE_KEY not in ALL_TEXTS:
+        ACTIVE_KEY = next(iter(ALL_TEXTS), "")
+    await update.message.reply_text(f"✅ {len(ungrouped)} قالب بدون‌بخش برای همیشه حذف شدند.")
 
 
 async def ready_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -862,28 +876,19 @@ async def use_template_view(q, k, extra_note=None):
 
 # ═══════════════════════════════════════════════════
 async def show_section(q, g):
-    if g == "__ungrouped__":
-        keys = [k for k in sorted(ALL_TEXTS) if not any(k in vals for vals in TEMPLATE_GROUPS.values())]
-        title = "📦 بدون بخش"
-        enabled = False
-    else:
-        keys = [k for k in TEMPLATE_GROUPS.get(g, []) if k in ALL_TEXTS]
-        title = "📁 " + section_title(g)
-        enabled = section_enabled(g)
+    keys = [k for k in TEMPLATE_GROUPS.get(g, []) if k in ALL_TEXTS]
+    title = "📁 " + section_title(g)
+    enabled = section_enabled(g)
     buttons=[]
-    if g != "__ungrouped__" and keys:
+    if keys:
         buttons.append([InlineKeyboardButton("🏷️ تنظیم عنوان همه", callback_data=f"titles_all:{g}")])
-    if g != "__ungrouped__" and not keys:
-        buttons.append([InlineKeyboardButton("📭 این بخش فعلاً خالی است", callback_data="noop")])
-    if g != "__ungrouped__":
-        buttons.append([InlineKeyboardButton(f"{'⛔ خاموش کردن' if enabled else '⚡ روشن کردن'} پست سریع این بخش", callback_data=f"quicktoggle:{g}")])
-    if g != "__ungrouped__":
-        buttons.append([InlineKeyboardButton("➕ افزودن متن به این بخش", callback_data=f"section_add_text:{g}")])
-        buttons.append([InlineKeyboardButton("📦 افزودن قالب موجود به این بخش", callback_data=f"section_add_template:{g}")])
     else:
-        buttons.append([InlineKeyboardButton("➕ افزودن متن", callback_data="tmpl_add")])
+        buttons.append([InlineKeyboardButton("📭 این بخش فعلاً خالی است", callback_data="noop")])
+    buttons.append([InlineKeyboardButton(f"{'⛔ خاموش کردن' if enabled else '⚡ روشن کردن'} پست سریع این بخش", callback_data=f"quicktoggle:{g}")])
+    buttons.append([InlineKeyboardButton("➕ افزودن متن به این بخش", callback_data=f"section_add_text:{g}")])
+    buttons.append([InlineKeyboardButton("📦 افزودن قالب موجود به این بخش", callback_data=f"section_add_template:{g}")])
     quote_status = ""
-    if g != "__ungrouped__" and keys:
+    if keys:
         bq_count = sum(1 for k in keys if ALL_TEXTS.get(k, {}).get("blockquote"))
         quote_status = f"\n💬 نقل‌قول: {bq_count} از {len(keys)} قالب روشن"
         last_word = get_section_last_quote(g)
@@ -897,7 +902,7 @@ async def show_section(q, g):
     for k in keys:
         buttons.append([InlineKeyboardButton(f"📝 {k}", callback_data=f"use:{k}")])
         buttons.append([InlineKeyboardButton(f"🗑 حذف {k}", callback_data=f"del:{k}")])
-    buttons.append([InlineKeyboardButton("🗑 حذف بخش", callback_data=f"section_del:{g}")]) if g != "__ungrouped__" else None
+    buttons.append([InlineKeyboardButton("🗑 حذف بخش", callback_data=f"section_del:{g}")])
     buttons.append([InlineKeyboardButton("🔙 لیست بخش‌ها", callback_data="back_list")])
     await q.edit_message_text(title + f"\n\n📦 {len(keys)} قالب" + quote_status, reply_markup=InlineKeyboardMarkup(buttons))
 
@@ -962,7 +967,7 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except (ValueError, IndexError):
             await q.edit_message_text("❌ این پوشه پیدا نشد."); return
         context.user_data["final_delete_group"] = g
-        await q.edit_message_text(f"⚠️ حذف پوشه «{section_title(g)}»؟\n\nخود قالب‌ها حذف نمی‌شوند و فقط پوشه و ارتباط قالب‌ها با آن حذف می‌شود.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ بله، حذف کن", callback_data="final_del_yes")],[InlineKeyboardButton("❌ لغو", callback_data="final_del_menu")]]))
+        await q.edit_message_text(f"⚠️ حذف پوشه «{section_title(g)}»؟\n\nاین کار خود قالب‌های داخل این پوشه را هم برای همیشه حذف می‌کند.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ بله، حذف کن", callback_data="final_del_yes")],[InlineKeyboardButton("❌ لغو", callback_data="final_del_menu")]]))
         return
 
     if data == "final_del_yes":
@@ -971,9 +976,14 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         g = context.user_data.pop("final_delete_group", None)
         if not g or g not in TEMPLATE_GROUPS:
             await q.edit_message_text("❌ این پوشه دیگر وجود ندارد."); return
+        keys=[k for k in TEMPLATE_GROUPS.get(g,[]) if k in ALL_TEXTS]
+        for k in keys:
+            ALL_TEXTS.pop(k, None)
         del TEMPLATE_GROUPS[g]; SECTION_SETTINGS.pop(g, None)
-        save_template_groups(); save_section_settings()
-        await q.edit_message_text(f"✅ پوشه «{section_title(g)}» حذف شد.\nقالب‌های داخل آن حذف نشدند و به «بدون بخش» منتقل شدند.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📁 برگشت به نهایی", callback_data="final_back")]]))
+        save_template_groups(); save_section_settings(); save_texts()
+        if ACTIVE_KEY not in ALL_TEXTS:
+            ACTIVE_KEY = next(iter(ALL_TEXTS), "")
+        await q.edit_message_text(f"✅ پوشه «{section_title(g)}» و {len(keys)} قالب داخل آن برای همیشه حذف شدند.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📁 برگشت به نهایی", callback_data="final_back")]]))
         return
 
     if data == "final_back":
@@ -1132,7 +1142,7 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.clear(); context.user_data["state"]="section_delete_confirm"; context.user_data["delete_group"]=g
         msg = (
             f"🗑 حذف بخش «{section_title(g)}»؟\n\n"
-            "این کار خود قالب‌ها را حذف نمی‌کند؛ فقط بخش و ارتباطشان را حذف می‌کند.\n\n"
+            "⚠️ این کار خود قالب‌های داخل این بخش را هم برای همیشه حذف می‌کند.\n\n"
             f"تعداد قالب: {len(keys)}"
         )
         await q.edit_message_text(msg, reply_markup=InlineKeyboardMarkup([
@@ -1146,12 +1156,18 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.edit_message_text("⛔ اجازه نداری!")
             return
         g=context.user_data.get("delete_group")
+        keys=[k for k in TEMPLATE_GROUPS.get(g,[]) if k in ALL_TEXTS]
+        for k in keys:
+            ALL_TEXTS.pop(k, None)
         if g in TEMPLATE_GROUPS:
             del TEMPLATE_GROUPS[g]
             save_template_groups()
         SECTION_SETTINGS.pop(g,None); save_section_settings()
+        save_texts()
+        if ACTIVE_KEY not in ALL_TEXTS:
+            ACTIVE_KEY = next(iter(ALL_TEXTS), "")
         context.user_data.clear()
-        await q.edit_message_text("✅ بخش حذف شد. قالب‌ها به «بدون بخش» منتقل شدند.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 لیست بخش‌ها", callback_data="back_list")]]))
+        await q.edit_message_text(f"✅ بخش و {len(keys)} قالب داخل آن برای همیشه حذف شدند.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 لیست بخش‌ها", callback_data="back_list")]]))
         return
 
     if data.startswith("section_add_text:"):
@@ -2750,6 +2766,7 @@ def main():
     app.add_handler(CommandHandler("backup", backup_cmd))
     app.add_handler(CommandHandler("add", add_cmd))
     app.add_handler(CommandHandler("list", list_cmd))
+    app.add_handler(CommandHandler("cleanup_ungrouped", cleanup_ungrouped_cmd))
     app.add_handler(CommandHandler("ready", ready_cmd))
     app.add_handler(CommandHandler("myposts", my_posts_cmd))
     app.add_handler(CallbackQueryHandler(callback))
