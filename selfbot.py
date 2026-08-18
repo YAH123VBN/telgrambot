@@ -142,6 +142,19 @@ def get_main_keyboard(user_id: int):
         buttons.append(["👮‍♂️ مدیریت ادمین‌ها"])
     return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
 
+# Every label that appears on any persistent reply-keyboard. Used so that
+# tapping a menu button always navigates, even while the bot is mid-way
+# through collecting free-text input for something else (e.g. bulk titles
+# for "تنظیم عنوان همه" or bank items for "بانک کلمات") — otherwise the
+# button's own label text gets swallowed as if it were that input, which is
+# how a literal "📁 نهایی" line previously ended up stored as a title.
+MAIN_MENU_BUTTON_TEXTS = {
+    "🎯 آماده‌سازی", "📋 لیست متن‌ها", "📁 نهایی", "➕ افزودن متن",
+    "⚡ پست سریع", "📁 پست‌های من", "👮‍♂️ مدیریت ادمین‌ها",
+    "➕ افزودن ادمین", "🗑 برکناری ادمین", "⚙️ مدیریت دسترسی‌ها",
+    "📋 لیست ادمین‌ها", "🔙 بازگشت به منوی اصلی",
+}
+
 MULTI_POST_KEYBOARD = ReplyKeyboardMarkup(
     [["✅ تمام", "❌ لغو"]],
     resize_keyboard=True
@@ -2597,6 +2610,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.clear()
         await update.message.reply_text("❌ لغو شد.", reply_markup=get_main_keyboard(uid))
         return
+    if state and text in MAIN_MENU_BUTTON_TEXTS:
+        # A menu button was tapped while some other input was being
+        # collected (e.g. bulk bank titles). Drop that pending state so the
+        # button below is handled as real navigation instead of being
+        # swallowed as a line of bank/title text.
+        context.user_data.pop("state", None)
+        state = None
     if text == "👮‍♂️ مدیریت ادمین‌ها":
         await admin_menu_cmd(update, context)
         return
