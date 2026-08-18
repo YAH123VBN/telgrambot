@@ -200,6 +200,13 @@ def set_section_enabled(g, enabled):
     SECTION_SETTINGS.setdefault(g, {})["quick_enabled"] = bool(enabled)
     save_section_settings()
 
+def get_section_last_quote(g):
+    return str(SECTION_SETTINGS.get(g, {}).get("last_quote_text", "") or "")
+
+def set_section_last_quote(g, text):
+    SECTION_SETTINGS.setdefault(g, {})["last_quote_text"] = text
+    save_section_settings()
+
 def section_title(g):
     category, subcategory = (g.split("|", 1) + [""])[:2]
     return f"{category} / {subcategory}" if subcategory else category
@@ -844,6 +851,9 @@ async def use_template_view(q, k, extra_note=None):
     if bq:
         buttons.append([InlineKeyboardButton("❌ خاموش کردن نقل‌قول", callback_data=f"bq_off:{k}")])
         buttons.append([InlineKeyboardButton("🌐 روشن کردن نقل‌قول برای همه این بخش", callback_data=f"bqall:{k}")])
+    elif qt:
+        buttons.append([InlineKeyboardButton(f"✅ روشن کردن نقل‌قول ({qt})", callback_data=f"bq_on_quick:{k}")])
+        buttons.append([InlineKeyboardButton("✏️ نقل‌قول با متن جدید", callback_data=f"bq_ask:{k}")])
     else:
         buttons.append([InlineKeyboardButton("✅ روشن کردن نقل‌قول", callback_data=f"bq_ask:{k}")])
     buttons.append([InlineKeyboardButton("🔙 بازگشت", callback_data="back_list")])
@@ -876,7 +886,13 @@ async def show_section(q, g):
     if g != "__ungrouped__" and keys:
         bq_count = sum(1 for k in keys if ALL_TEXTS.get(k, {}).get("blockquote"))
         quote_status = f"\n💬 نقل‌قول: {bq_count} از {len(keys)} قالب روشن"
-        buttons.append([InlineKeyboardButton("✅ روشن کردن نقل‌قول برای همه بخش", callback_data=f"section_bq_on:{g}")])
+        last_word = get_section_last_quote(g)
+        if last_word:
+            quote_status += f"\n💬 آخرین کلمه: {last_word}"
+            buttons.append([InlineKeyboardButton(f"✅ روشن کردن نقل‌قول برای همه ({last_word})", callback_data=f"section_bq_on_quick:{g}")])
+            buttons.append([InlineKeyboardButton("✏️ نقل‌قول همه با کلمه جدید", callback_data=f"section_bq_on:{g}")])
+        else:
+            buttons.append([InlineKeyboardButton("✅ روشن کردن نقل‌قول برای همه بخش", callback_data=f"section_bq_on:{g}")])
         buttons.append([InlineKeyboardButton("❌ خاموش کردن نقل‌قول برای همه بخش", callback_data=f"section_bq_off:{g}")])
     for k in keys:
         buttons.append([InlineKeyboardButton(f"📝 {k}", callback_data=f"use:{k}")])
@@ -1042,6 +1058,33 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_section(q,g)
         return
 
+    if data.startswith("section_bq_on_quick:"):
+        if not has_permission(uid, "list"):
+            await q.edit_message_text("⛔ اجازه نداری!")
+            return
+        g = data[len("section_bq_on_quick:"):]
+        keys = [k for k in TEMPLATE_GROUPS.get(g, []) if k in ALL_TEXTS]
+        quote_text = get_section_last_quote(g)
+        if not keys or not quote_text:
+            await q.answer("کلمه‌ای ذخیره نشده، اول یک بار با «کلمه جدید» انتخابش کن.", show_alert=True)
+            return
+        changed, skipped = 0, 0
+        for k in keys:
+            body = str(ALL_TEXTS[k].get("link_text", "") or "")
+            if quote_text in body:
+                ALL_TEXTS[k]["quote_text"] = quote_text
+                ALL_TEXTS[k]["blockquote"] = True
+                changed += 1
+            else:
+                skipped += 1
+        save_texts()
+        try:
+            await q.answer(f"نقل‌قول «{quote_text}» برای {changed} قالب روشن شد!")
+        except Exception:
+            pass
+        await show_section(q, g)
+        return
+
     if data.startswith("section_bq_on:"):
         if not has_permission(uid, "list"):
             await q.edit_message_text("⛔ اجازه نداری!")
@@ -1057,7 +1100,8 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text(
             f"💬 نقل‌قول برای همه — {section_title(g)}\n\n"
             "کدام کلمه/متن نقل‌قول بشه؟ عین همون کلمه یا عبارت را بفرست.\n"
-            "این کلمه در هر قالبی از این بخش که وجودش را داشته باشد، نقل‌قول می‌شود؛ قالب‌هایی که این کلمه را ندارند دست‌نخورده می‌مانند.\n\n"
+            "این کلمه در هر قالبی از این بخش که وجودش را داشته باشد، نقل‌قول می‌شود؛ قالب‌هایی که این کلمه را ندارند دست‌نخورده می‌مانند.\n"
+            "این کلمه ذخیره می‌شه تا دفعه‌های بعد دیگه لازم نباشه دوباره بپرسم.\n\n"
             f"📦 این بخش {len(keys)} قالب دارد.\n\n"
             "برای لغو: لغو"
         )
@@ -1255,6 +1299,28 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         except Exception as e:
             await q.edit_message_text(f"❌ خطا در پیش‌نمایش: {e}")
+    elif data.startswith("bq_on_quick:"):
+        if not has_permission(uid, "list"):
+            await q.edit_message_text("⛔ اجازه نداری!")
+            return
+        k = data[len("bq_on_quick:"):]
+        if k not in ALL_TEXTS:
+            await q.edit_message_text("❌ قالب پیدا نشد!")
+            return
+        qt = str(ALL_TEXTS[k].get("quote_text", "") or "")
+        body = str(ALL_TEXTS[k].get("link_text", "") or "")
+        if not qt or qt not in body:
+            await q.answer("این متن دیگه داخل قالب نیست، یک متن جدید انتخاب کن.", show_alert=True)
+            return
+        ALL_TEXTS[k]["blockquote"] = True
+        save_texts()
+        try:
+            await q.answer("نقل‌قول روشن شد!")
+        except Exception:
+            pass
+        await use_template_view(q, k)
+        return
+
     elif data.startswith("bq_ask:"):
         if not has_permission(uid, "list"):
             await q.edit_message_text("⛔ اجازه نداری!")
@@ -2159,6 +2225,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 skipped += 1
         save_texts()
+        if quote_text:
+            set_section_last_quote(g, quote_text)
         context.user_data.clear()
         msg = f"✅ نقل‌قول برای {changed} قالب بخش «{section_title(g)}» روشن شد."
         if skipped:
