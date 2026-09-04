@@ -131,12 +131,12 @@ def can_use_bot(user_id: int) -> bool:
 # ═══════════════════════════════════════════════════
 
 def get_main_keyboard(user_id: int):
+    # منوی اصلی مرتب و دو ستونه
     buttons = [
-        ["🎯 آماده‌سازی", "📋 لیست متن‌ها"],
-        ["📁 نهایی"],
-        ["➕ افزودن متن"],
-        ["⚡ پست سریع"],
-        ["📁 پست‌های من"],
+        ["🤖 دستیار", "🎯 آماده‌سازی"],
+        ["⚡ پست سریع", "📋 لیست متن‌ها"],
+        ["🧩 مدیریت قالب‌ها", "➕ افزودن متن"],
+        ["📁 نهایی", "📁 پست‌های من"],
     ]
     if is_owner(user_id):
         buttons.append(["👮‍♂️ مدیریت ادمین‌ها"])
@@ -149,8 +149,8 @@ def get_main_keyboard(user_id: int):
 # button's own label text gets swallowed as if it were that input, which is
 # how a literal "📁 نهایی" line previously ended up stored as a title.
 MAIN_MENU_BUTTON_TEXTS = {
-    "🎯 آماده‌سازی", "📋 لیست متن‌ها", "📁 نهایی", "➕ افزودن متن",
-    "⚡ پست سریع", "📁 پست‌های من", "👮‍♂️ مدیریت ادمین‌ها",
+    "🤖 دستیار", "🎯 آماده‌سازی", "📋 لیست متن‌ها", "📁 نهایی", "➕ افزودن متن",
+    "⚡ پست سریع", "🧩 مدیریت قالب‌ها", "📁 پست‌های من", "👮‍♂️ مدیریت ادمین‌ها",
     "➕ افزودن ادمین", "🗑 برکناری ادمین", "⚙️ مدیریت دسترسی‌ها",
     "📋 لیست ادمین‌ها", "🔙 بازگشت به منوی اصلی",
 }
@@ -795,8 +795,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "👋 سلام!\n\n"
         "🎯 آماده‌سازی → قالب رو انتخاب کن، بعد با موضوع یا بدون موضوع رو مشخص کن\n"
         "📋 لیست متن‌ها → مدیریت قالب‌ها + متن‌های رندوم\n"
+        "🧩 مدیریت قالب‌ها → مدیریت بخش‌ها و قالب‌ها\n"
         "➕ افزودن متن → ساخت قالب جدید\n"
-        "📁 پست‌های من → همه پست‌ها\n\n"
+        "📁 پست‌های من → همه پست‌ها\n"
+        "🤖 دستیار → اجرای دستورهای ساده با متن فارسی\n\n"
         "💡 نکته: بعد از انتخاب قالب، می‌تونی پست رو با موضوع یا بدون موضوع بسازی.\n"
         "در حالت بدون موضوع، بعد از لینک مستقیم پست ساخته می‌شه.",
         reply_markup=get_main_keyboard(uid)
@@ -2593,8 +2595,6 @@ async def rebuild_admin_perms_inline(q, target_id):
     await q.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(buttons))
 
 # ═══════════════════════════════════════════════════
-
-# ═══════════════════════════════════════════════════
 # 🤖 دستیار فرمان داخلی (بدون AI / بدون اینترنت)
 # ═══════════════════════════════════════════════════
 _PERSIAN_DIGITS = str.maketrans("۰۱۲۳۴۵۶۷۸۹", "0123456789")
@@ -2710,19 +2710,56 @@ async def _assistant_execute(update,context,actions):
     context.user_data.pop("state",None)
     await update.message.reply_text("🤖 انجام شد.\n\n"+"\n".join(report),reply_markup=get_main_keyboard(uid)); return True
 
+
+async def assistant_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    if not can_use_bot(uid):
+        await update.message.reply_text("⛔ دسترسی نداری!")
+        return
+    if not has_permission(uid, "manage_templates"):
+        await update.message.reply_text(
+            "⛔ برای استفاده از دستیار، دسترسی مدیریت قالب‌ها لازم است.",
+            reply_markup=get_main_keyboard(uid)
+        )
+        return
+    context.user_data.clear()
+    context.user_data["assistant_mode"] = True
+    await update.message.reply_text(
+        "🤖 دستیار آماده است!\n\n"
+        "خیلی ساده بهش بگو چی می‌خوای انجام بده. مثلاً:\n"
+        "• یه بخش به اسم وطنی بساز\n"
+        "• ۲۰ تا قالب برای وطنی بساز\n"
+        "• داخل بانک وطنی: متن اول، متن دوم، متن سوم\n"
+        "• پست سریع وطنی رو روشن کن\n\n"
+        "💡 چند کار رو هم می‌تونی در یک پیام بنویسی.\n"
+        "برای خروج، یکی از دکمه‌های منو رو بزن.",
+        reply_markup=get_main_keyboard(uid)
+    )
+
+# ═══════════════════════════════════════════════════
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global ACTIVE_KEY
-    if not context.user_data.get("state"):
-        assistant_actions=_assistant_parse(update.message.text or "")
-        if assistant_actions:
-            if await _assistant_execute(update, context, assistant_actions):
-                return
     text = update.message.text or ""
+    if text == "🤖 دستیار":
+        await assistant_cmd(update, context)
+        return
     state = context.user_data.get("state")
     uid = update.effective_user.id
     if not can_use_bot(uid):
         await update.message.reply_text("⛔ دسترسی نداری!")
         return
+    if not state or context.user_data.get("assistant_mode"):
+        assistant_actions = _assistant_parse(text)
+        if assistant_actions:
+            if await _assistant_execute(update, context, assistant_actions):
+                context.user_data.pop("assistant_mode", None)
+                return
+        if context.user_data.get("assistant_mode") and text not in MAIN_MENU_BUTTON_TEXTS:
+            await update.message.reply_text(
+                "🤖 این دستور رو نفهمیدم.\n\n"
+                "مثال: «۲۰ تا قالب برای وطنی بساز» یا «یه بخش به اسم وطنی بساز»"
+            )
+            return
     if text in ["تمام", "✅ تمام"] and context.user_data.get("ready_mode"):
         context.user_data.pop("ready_mode", None)
         context.user_data.pop("pending_url", None)
@@ -3725,6 +3762,7 @@ async def post_init(app):
     # Show these commands in Telegram's Menu button.
     await app.bot.set_my_commands([
         ("start", "استارت ربات"),
+        ("assistant", "باز کردن دستیار فرمان"),
         ("backup", "گرفتن بکاپ از اطلاعات ربات"),
     ])
 
@@ -3745,6 +3783,7 @@ def main():
     start_link_bridge_server()
     app = Application.builder().token(TOKEN).post_init(post_init).build()
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("assistant", assistant_cmd))
     app.add_handler(CommandHandler("backup", backup_cmd))
     app.add_handler(CommandHandler("add", add_cmd))
     app.add_handler(CommandHandler("list", list_cmd))
