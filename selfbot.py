@@ -1,4 +1,4 @@
-import json
+=import json
 import os
 import re
 import asyncio
@@ -6,6 +6,9 @@ import random
 import zipfile
 import threading
 import secrets
+import urllib.request
+import urllib.error
+import time
 from urllib.parse import urlparse, parse_qs
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from datetime import datetime
@@ -137,6 +140,7 @@ def get_main_keyboard(user_id: int):
         ["➕ افزودن متن"],
         ["⚡ پست سریع"],
         ["📁 پست‌های من"],
+        ["🤖 دستیار هوشمند"],
     ]
     if is_owner(user_id):
         buttons.append(["👮‍♂️ مدیریت ادمین‌ها"])
@@ -151,7 +155,7 @@ def get_main_keyboard(user_id: int):
 MAIN_MENU_BUTTON_TEXTS = {
     "🎯 آماده‌سازی", "📋 لیست متن‌ها", "📁 نهایی", "➕ افزودن متن",
     "⚡ پست سریع", "📁 پست‌های من", "👮‍♂️ مدیریت ادمین‌ها",
-    "➕ افزودن ادمین", "🗑 برکناری ادمین", "⚙️ مدیریت دسترسی‌ها",
+    "🤖 دستیار هوشمند", "➕ افزودن ادمین", "🗑 برکناری ادمین", "⚙️ مدیریت دسترسی‌ها",
     "📋 لیست ادمین‌ها", "🔙 بازگشت به منوی اصلی",
 }
 
@@ -2594,6 +2598,14 @@ async def rebuild_admin_perms_inline(q, target_id):
 
 # ═══════════════════════════════════════════════════
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Natural-language AI entry point. Explicit "ببین ..." works anywhere;
+    # dedicated AI mode handles subsequent messages until "لغو".
+    incoming = (update.message.text or "").strip() if update.message else ""
+    if incoming == "🤖 دستیار هوشمند":
+        await ai_cmd(update, context)
+        return
+    if await ai_handle_text(update, context, incoming):
+        return
     global ACTIVE_KEY
     text = update.message.text or ""
     state = context.user_data.get("state")
@@ -3599,6 +3611,303 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 # ═══════════════════════════════════════════════════
+
+# ═══════════════════════════════════════════════════
+# 🤖 AI AGENT — Natural-language control of the bot
+# Uses an OpenAI-compatible HTTP API directly (no SDK required).
+# Configure OPENAI_API_KEY, optional OPENAI_MODEL and OPENAI_BASE_URL.
+# The model never executes Python/code. It returns a strict JSON action plan
+# which is validated and executed by the local tool layer below.
+# ═══════════════════════════════════════════════════
+AI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
+AI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5-mini").strip()
+AI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1").strip().rstrip("/")
+AI_MAX_TURNS = 6
+AI_TIMEOUT = 45
+AI_MAX_OUTPUT = 12000
+AI_CONFIRM_TTL = 600
+
+
+def _ai_enabled():
+    return bool(AI_API_KEY)
+
+
+def _ai_json_request(messages, temperature=0.15):
+    url = AI_BASE_URL + "/chat/completions"
+    payload = {
+        "model": AI_MODEL,
+        "messages": messages,
+        "temperature": temperature,
+        "response_format": {"type": "json_object"},
+    }
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {AI_API_KEY}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=AI_TIMEOUT) as resp:
+            raw = resp.read(AI_MAX_OUTPUT * 2).decode("utf-8", errors="replace")
+        data = json.loads(raw)
+        content = data["choices"][0]["message"]["content"]
+        return json.loads(content)
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")[:1000]
+        raise RuntimeError(f"AI API HTTP {e.code}: {body}")
+    except Exception as e:
+        raise RuntimeError(f"AI API error: {e}")
+
+
+def _ai_snapshot(uid):
+    groups = []
+    for g, keys in TEMPLATE_GROUPS.items():
+        groups.append({
+            "key": g,
+            "title": section_title(g),
+            "enabled": bool(section_enabled(g)),
+            "template_count": sum(1 for k in keys if k in ALL_TEXTS),
+            "templates": [k for k in keys if k in ALL_TEXTS][:100],
+        })
+    template_sample = []
+    for g, keys in TEMPLATE_GROUPS.items():
+        for k in keys[:30]:
+            if k in ALL_TEXTS:
+                t = ALL_TEXTS[k]
+                template_sample.append({
+                    "section": g, "key": k,
+                    "title": str(t.get("title", "")),
+                    "header": str(t.get("header", "")),
+                    "link_text": str(t.get("link_text", "")),
+                    "linked_word": str(t.get("linked_word", "")),
+                    "footer": str(t.get("footer", "")),
+                    "blockquote": bool(t.get("blockquote", False)),
+                    "random_headers": list(t.get("random_headers", []))[:20],
+                })
+    return {
+        "sections": groups,
+        "template_sample": template_sample[:150],
+        "active_template": ACTIVE_KEY,
+        "posts_count": len(get_posts(uid)),
+        "permissions": "owner/full" if is_owner(uid) else ADMINS.get(str(uid), {}).get("permissions", []),
+    }
+
+
+def _ai_tools_description():
+    return [
+        {"name":"get_state","args":{},"description":"Read current bot sections, templates and safe metadata."},
+        {"name":"list_templates","args":{"section":"optional section key/title"},"description":"List templates in a section."},
+        {"name":"get_template","args":{"template":"template key"},"description":"Read one template in detail."},
+        {"name":"set_template","args":{"template":"key","changes":"object of fields to change"},"description":"Change existing template fields: title, header, link_text, linked_word, footer, blockquote, random_headers."},
+        {"name":"set_titles","args":{"section":"section key","titles":"array of strings"},"description":"Replace titles of the first N templates in section, in order."},
+        {"name":"add_title_bank","args":{"section":"section key","template":"template key","items":"array of strings"},"description":"Append title-bank items to one template."},
+        {"name":"reset_title_progress","args":{"section":"section key"},"description":"Reset section title-bank/template cursor."},
+        {"name":"reset_bank_cursor","args":{"section":"section key"},"description":"Reset only bank cursor for a section."},
+        {"name":"set_section_enabled","args":{"section":"section key","enabled":"boolean"},"description":"Enable or disable a section for quick posts."},
+        {"name":"create_template","args":{"section":"section key","name":"unique key","link_text":"text","linked_word":"optional"},"description":"Create a new template in an existing section."},
+        {"name":"delete_template","args":{"template":"key"},"description":"Permanently delete one template and related data."},
+        {"name":"delete_section_templates","args":{"section":"section key"},"description":"Permanently delete all templates in a section, leaving the section."},
+    ]
+
+AI_SYSTEM = """You are the control agent for a Persian Telegram bot. You understand Persian naturally.\nYou may ONLY use the provided tools. Never invent tool names, template keys, section keys, permissions, or current state.\nYour job is to translate the user's natural-language request into a safe sequence of tool calls.\nReturn ONLY valid JSON with this shape: {\"reply\":\"short Persian explanation\",\"actions\":[{\"tool\":\"tool_name\",\"args\":{}}],\"needs_confirmation\":false,\"confirmation_text\":\"\"}\nRules:\n- Read state first when the target is ambiguous.\n- Resolve section by exact key first, then exact title, then obvious unique match. If multiple matches exist, ask.\n- For destructive actions (delete_template, delete_section_templates), set needs_confirmation=true and DO NOT execute them yet.\n- Bulk changes are allowed when explicitly requested.\n- Never modify admin permissions, owner ID, bot token, environment variables, or source code through this agent.\n- Never execute arbitrary code, shell commands, SQL, or filesystem paths supplied by the user.\n- Preserve unrelated template fields when changing a template.\n- If a requested operation is unsupported, explain that instead of improvising.\n"""
+
+
+def _ai_resolve_section(ref):
+    ref = str(ref or "").strip()
+    if ref in TEMPLATE_GROUPS:
+        return ref
+    exact = [g for g in TEMPLATE_GROUPS if section_title(g).strip() == ref]
+    if len(exact) == 1:
+        return exact[0]
+    low = ref.casefold()
+    matches = [g for g in TEMPLATE_GROUPS if g.casefold() == low or section_title(g).casefold() == low]
+    if len(matches) == 1:
+        return matches[0]
+    return None
+
+
+def _ai_find_template(ref):
+    ref = str(ref or "").strip()
+    if ref in ALL_TEXTS:
+        return ref
+    matches=[]
+    low=ref.casefold()
+    for k,t in ALL_TEXTS.items():
+        if str(t.get("title","")).strip().casefold()==low:
+            matches.append(k)
+    return matches[0] if len(matches)==1 else None
+
+
+def _ai_require_perm(uid, tool):
+    if tool in {"get_state","list_templates","get_template"}:
+        return True
+    if tool in {"set_template","set_titles","add_title_bank","reset_title_progress","reset_bank_cursor","set_section_enabled","create_template","delete_template","delete_section_templates"}:
+        return has_permission(uid, "manage_templates") or has_permission(uid, "list") or is_owner(uid)
+    return False
+
+
+def _ai_execute_tool(uid, tool, args):
+    if not _ai_require_perm(uid, tool):
+        raise PermissionError("⛔ اجازه انجام این عملیات را نداری.")
+    args = args or {}
+    if tool == "get_state":
+        return _ai_snapshot(uid)
+    if tool == "list_templates":
+        g = _ai_resolve_section(args.get("section")) if args.get("section") else None
+        if args.get("section") and not g: raise ValueError("بخش پیدا نشد یا نامش مبهم است.")
+        out=[]
+        for gg, keys in TEMPLATE_GROUPS.items():
+            if g and gg!=g: continue
+            out.append({"section":gg,"title":section_title(gg),"templates":[{"key":k,"title":str(ALL_TEXTS[k].get("title",""))} for k in keys if k in ALL_TEXTS]})
+        return out
+    if tool == "get_template":
+        k=_ai_find_template(args.get("template"))
+        if not k: raise ValueError("قالب پیدا نشد یا نام آن مبهم است.")
+        return {"key":k,"section":find_group_for_key(k),"data":ALL_TEXTS[k]}
+    if tool == "set_template":
+        k=_ai_find_template(args.get("template")); changes=args.get("changes") or {}
+        if not k: raise ValueError("قالب پیدا نشد یا نام آن مبهم است.")
+        allowed={"title","header","link_text","linked_word","footer","blockquote","random_headers"}
+        clean={x:y for x,y in changes.items() if x in allowed}
+        if not clean: raise ValueError("تغییری برای اعمال وجود ندارد.")
+        if "random_headers" in clean and not isinstance(clean["random_headers"], list): raise ValueError("random_headers باید لیست باشد.")
+        ALL_TEXTS[k].update(clean); save_texts()
+        return {"ok":True,"template":k,"changes":clean}
+    if tool == "set_titles":
+        g=_ai_resolve_section(args.get("section")); titles=args.get("titles")
+        if not g: raise ValueError("بخش پیدا نشد یا نام آن مبهم است.")
+        if not isinstance(titles,list) or not titles: raise ValueError("titles باید یک لیست غیرخالی باشد.")
+        keys=[k for k in TEMPLATE_GROUPS.get(g,[]) if k in ALL_TEXTS]
+        n=min(len(keys),len(titles))
+        for i in range(n): ALL_TEXTS[keys[i]]["title"]=str(titles[i])
+        save_texts()
+        return {"ok":True,"section":g,"changed":n}
+    if tool == "add_title_bank":
+        g=_ai_resolve_section(args.get("section")); k=_ai_find_template(args.get("template")); items=args.get("items")
+        if not g or not k: raise ValueError("بخش یا قالب پیدا نشد.")
+        if find_group_for_key(k)!=g: raise ValueError("قالب متعلق به این بخش نیست.")
+        if not isinstance(items,list) or not items: raise ValueError("items باید لیست باشد.")
+        add_title_bank_items(g,k,[str(x) for x in items])
+        return {"ok":True,"section":g,"template":k,"added":len(items)}
+    if tool == "reset_title_progress":
+        g=_ai_resolve_section(args.get("section"));
+        if not g: raise ValueError("بخش پیدا نشد.")
+        reset_title_bank_progress(g); return {"ok":True,"section":g}
+    if tool == "reset_bank_cursor":
+        g=_ai_resolve_section(args.get("section"));
+        if not g: raise ValueError("بخش پیدا نشد.")
+        reset_bank_cursor_only(g); return {"ok":True,"section":g}
+    if tool == "set_section_enabled":
+        g=_ai_resolve_section(args.get("section"));
+        if not g: raise ValueError("بخش پیدا نشد.")
+        set_section_enabled(g,bool(args.get("enabled"))); return {"ok":True,"section":g,"enabled":bool(args.get("enabled"))}
+    if tool == "create_template":
+        g=_ai_resolve_section(args.get("section")); name=str(args.get("name","")).strip(); link_text=str(args.get("link_text","")); linked=str(args.get("linked_word","")).strip()
+        if not g: raise ValueError("بخش پیدا نشد.")
+        if not name or name in ALL_TEXTS: raise ValueError("نام قالب خالی است یا قبلاً وجود دارد.")
+        if not link_text: raise ValueError("link_text خالی است.")
+        if linked and linked not in link_text: raise ValueError("linked_word داخل link_text نیست.")
+        ALL_TEXTS[name]={"header":"","link_text":link_text,"linked_word":linked,"footer":"","random_headers":[],"blockquote":False,"title":""}
+        TEMPLATE_GROUPS.setdefault(g,[]).append(name); save_texts(); save_template_groups()
+        return {"ok":True,"section":g,"template":name}
+    if tool == "delete_template":
+        k=_ai_find_template(args.get("template"));
+        if not k: raise ValueError("قالب پیدا نشد.")
+        g=find_group_for_key(k); ALL_TEXTS.pop(k,None)
+        if g and g in TEMPLATE_GROUPS: TEMPLATE_GROUPS[g]=[x for x in TEMPLATE_GROUPS[g] if x!=k]
+        save_texts(); save_template_groups(); return {"ok":True,"deleted":k}
+    if tool == "delete_section_templates":
+        g=_ai_resolve_section(args.get("section"));
+        if not g: raise ValueError("بخش پیدا نشد.")
+        keys=[k for k in TEMPLATE_GROUPS.get(g,[]) if k in ALL_TEXTS]
+        for k in keys: ALL_TEXTS.pop(k,None)
+        TEMPLATE_GROUPS[g]=[]; TITLE_BANKS.pop(g,None)
+        save_texts(); save_template_groups(); save_title_banks()
+        return {"ok":True,"section":g,"deleted":len(keys)}
+    raise ValueError("ابزار ناشناخته است.")
+
+
+def _ai_build_plan(uid, user_text, history=None):
+    snapshot=_ai_snapshot(uid)
+    tools=_ai_tools_description()
+    messages=[
+        {"role":"system","content":AI_SYSTEM},
+        {"role":"system","content":"Current state:\n"+json.dumps(snapshot,ensure_ascii=False,indent=2)},
+        {"role":"system","content":"Available tools:\n"+json.dumps(tools,ensure_ascii=False,indent=2)},
+    ]
+    if history:
+        messages.extend(history[-AI_MAX_TURNS:])
+    messages.append({"role":"user","content":user_text})
+    return _ai_json_request(messages)
+
+
+def _ai_confirmation_key(uid):
+    return f"ai_pending_{uid}"
+
+
+async def ai_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid=update.effective_user.id
+    if not can_use_bot(uid):
+        await update.message.reply_text("⛔ دسترسی نداری!"); return
+    if not _ai_enabled():
+        await update.message.reply_text("⚠️ هوش مصنوعی فعال نیست. متغیر OPENAI_API_KEY را در محیط ربات تنظیم کن."); return
+    context.user_data["ai_mode"]=True
+    await update.message.reply_text("🤖 دستیار هوشمند فعال شد.\n\nطبیعی بنویس چی می‌خوای انجام بدم.\nمثال: «همه عنوان‌های بخش X رو از اول با ۲۰ عنوان جدید عوض کن».\n\nبرای خروج: لغو")
+
+
+async def ai_handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
+    uid=update.effective_user.id
+    if not _ai_enabled():
+        await update.message.reply_text("⚠️ OPENAI_API_KEY تنظیم نشده است."); return True
+    if not can_use_bot(uid):
+        await update.message.reply_text("⛔ دسترسی نداری!"); return True
+    if text.strip()=="لغو":
+        context.user_data.pop("ai_mode",None); context.user_data.pop(_ai_confirmation_key(uid),None)
+        await update.message.reply_text("✅ دستیار هوشمند بسته شد.",reply_markup=get_main_keyboard(uid)); return True
+    if not (context.user_data.get("ai_mode") or text.strip().startswith("ببین ")):
+        return False
+    if text.strip().startswith("ببین "):
+        text=text.strip()[6:].strip()
+        context.user_data["ai_mode"]=True
+    pending=context.user_data.get(_ai_confirmation_key(uid))
+    if pending and text.strip().casefold() in {"بله","تایید","تأیید","آره","انجام بده","yes","ok"}:
+        try:
+            results=[]
+            for action in pending.get("actions",[]):
+                results.append(_ai_execute_tool(uid,action.get("tool"),action.get("args",{})))
+            context.user_data.pop(_ai_confirmation_key(uid),None)
+            await update.message.reply_text("✅ انجام شد.\n\n"+str(pending.get("reply","تغییر موردنظر اعمال شد.")))
+        except Exception as e:
+            context.user_data.pop(_ai_confirmation_key(uid),None)
+            await update.message.reply_text(f"❌ اجرا نشد: {e}")
+        return True
+    if pending:
+        context.user_data.pop(_ai_confirmation_key(uid),None)
+    await update.message.chat.send_action("typing")
+    try:
+        plan=_ai_build_plan(uid,text)
+        if not isinstance(plan,dict): raise ValueError("پاسخ AI معتبر نیست.")
+        actions=plan.get("actions") or []
+        if not isinstance(actions,list): raise ValueError("actions نامعتبر است.")
+        for a in actions:
+            if not isinstance(a,dict) or a.get("tool") not in {x["name"] for x in _ai_tools_description()}:
+                raise ValueError("AI ابزار نامعتبر پیشنهاد داده است.")
+        if plan.get("needs_confirmation"):
+            context.user_data[_ai_confirmation_key(uid)]={"actions":actions,"reply":plan.get("reply","")}
+            await update.message.reply_text("⚠️ این کار نیاز به تأیید دارد:\n\n"+str(plan.get("confirmation_text") or plan.get("reply") or "عملیات حساس" )+"\n\nبرای انجام بنویس: بله\nبرای لغو: لغو")
+            return True
+        results=[]
+        for a in actions:
+            results.append(_ai_execute_tool(uid,a["tool"],a.get("args",{})))
+        reply=str(plan.get("reply") or "✅ انجام شد.")
+        await update.message.reply_text(reply)
+    except Exception as e:
+        await update.message.reply_text(f"❌ نتونستم درخواست رو انجام بدم.\n{e}")
+    return True
+
 async def post_init(app):
     # Show these commands in Telegram's Menu button.
     await app.bot.set_my_commands([
@@ -3624,6 +3933,7 @@ def main():
     app = Application.builder().token(TOKEN).post_init(post_init).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("backup", backup_cmd))
+    app.add_handler(CommandHandler("ai", ai_cmd))
     app.add_handler(CommandHandler("add", add_cmd))
     app.add_handler(CommandHandler("list", list_cmd))
     app.add_handler(CommandHandler("cleanup_ungrouped", cleanup_ungrouped_cmd))
