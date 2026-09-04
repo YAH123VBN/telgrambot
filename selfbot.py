@@ -1183,6 +1183,7 @@ async def show_section(q, g):
     buttons=[]
     if keys:
         buttons.append([InlineKeyboardButton("🏷️ بانک کلمات", callback_data=f"titlebank:{g}")])
+        buttons.append([InlineKeyboardButton("🏦 بانک گروهی قالب‌ها", callback_data=f"bulkbank:{g}")])
         buttons.append([InlineKeyboardButton("🏷️ تنظیم عنوان همه", callback_data=f"titles_all:{g}")])
         buttons.append([InlineKeyboardButton("👁️ مشاهده عنوان‌های تنظیم‌شده", callback_data=f"titles_all_view:{g}")])
     else:
@@ -1427,6 +1428,29 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🏷️ بانک کلمات — {section_title(g)}\n\n"
             "قالب موردنظر را انتخاب کن:",
             reply_markup=InlineKeyboardMarkup(buttons)
+        )
+        return
+
+    if data.startswith("bulkbank:"):
+        if not has_permission(uid, "list"):
+            await q.edit_message_text("⛔ اجازه نداری!")
+            return
+        g = data[len("bulkbank:"):]
+        keys = [k for k in TEMPLATE_GROUPS.get(g, []) if k in ALL_TEXTS]
+        if not keys:
+            await q.edit_message_text("📭 این بخش قالبی ندارد.")
+            return
+        context.user_data.clear()
+        context.user_data["state"] = "bulk_title_bank_count"
+        context.user_data["bulk_title_bank_group"] = g
+        context.user_data["bulk_title_bank_keys"] = keys
+        await q.edit_message_text(
+            f"🏦 بانک گروهی قالب‌ها — {section_title(g)}\n\n"
+            f"📦 این بخش {len(keys)} قالب دارد.\n\n"
+            "تعداد متن برای هر قالب را بفرست.\n"
+            "مثلاً اگر ۶ بفرستی، هر ۶ متن برای یک قالب قرار می‌گیرد؛\n"
+            "۶ متن بعدی برای قالب بعدی و همین‌طور تا آخر.\n\n"
+            "برای لغو: لغو"
         )
         return
 
@@ -3055,6 +3079,92 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("🔙 بازگشت به قالب", callback_data=f"use:{k}")]
             ])
+        )
+        return
+
+    if state == "bulk_title_bank_count":
+        if not has_permission(uid, "list"):
+            context.user_data.clear(); await update.message.reply_text("⛔ اجازه نداری!", reply_markup=get_main_keyboard(uid)); return
+        if text in {"لغو", "❌ لغو"}:
+            context.user_data.clear(); await update.message.reply_text("❌ لغو شد.", reply_markup=get_main_keyboard(uid)); return
+        try:
+            per_template = int(text.strip())
+        except (TypeError, ValueError):
+            await update.message.reply_text("❌ فقط یک عدد بفرست؛ مثلاً ۶")
+            return
+        if per_template <= 0:
+            await update.message.reply_text("❌ تعداد باید بیشتر از صفر باشد.")
+            return
+        g = context.user_data.get("bulk_title_bank_group")
+        keys = context.user_data.get("bulk_title_bank_keys", [])
+        if not g or not keys:
+            context.user_data.clear(); await update.message.reply_text("❌ بخش پیدا نشد.", reply_markup=get_main_keyboard(uid)); return
+        context.user_data["bulk_title_bank_count"] = per_template
+        context.user_data["state"] = "bulk_title_bank_add"
+        total_needed = len(keys) * per_template
+        await update.message.reply_text(
+            f"✅ تنظیم شد: {per_template} متن برای هر قالب.\n\n"
+            f"📁 تعداد قالب‌ها: {len(keys)}\n"
+            f"📦 برای پر کردن همه قالب‌ها: {total_needed} متن لازم است.\n\n"
+            "حالا همه متن‌ها را یک‌جا بفرست؛ هر خط = یک متن.\n"
+            "بات خودش هر بسته را بین قالب‌ها تقسیم می‌کند.\n\n"
+            "مثلاً با عدد ۶:\n"
+            "متن ۱ تا ۶ → قالب ۱\n"
+            "متن ۷ تا ۱۲ → قالب ۲\n"
+            "متن ۱۳ تا ۱۸ → قالب ۳\n"
+            "...\n\n"
+            "برای لغو: لغو"
+        )
+        return
+
+    if state == "bulk_title_bank_add":
+        if not has_permission(uid, "list"):
+            context.user_data.clear(); await update.message.reply_text("⛔ اجازه نداری!", reply_markup=get_main_keyboard(uid)); return
+        if text in {"لغو", "❌ لغو"}:
+            context.user_data.clear(); await update.message.reply_text("❌ لغو شد.", reply_markup=get_main_keyboard(uid)); return
+        g = context.user_data.get("bulk_title_bank_group")
+        keys = context.user_data.get("bulk_title_bank_keys", [])
+        per_template = int(context.user_data.get("bulk_title_bank_count", 0) or 0)
+        if not g or not keys or per_template <= 0:
+            context.user_data.clear(); await update.message.reply_text("❌ اطلاعات بانک گروهی پیدا نشد.", reply_markup=get_main_keyboard(uid)); return
+        keys = [k for k in keys if k in ALL_TEXTS and k in TEMPLATE_GROUPS.get(g, [])]
+        items = [line.strip() for line in text.splitlines() if line.strip()]
+        if not items:
+            await update.message.reply_text("❌ حداقل یک متن در یک خط بفرست.")
+            return
+
+        full_groups = len(items) // per_template
+        usable = full_groups * per_template
+        assigned_groups = min(full_groups, len(keys))
+        assigned_items = assigned_groups * per_template
+
+        for i in range(assigned_groups):
+            k = keys[i]
+            chunk = items[i * per_template:(i + 1) * per_template]
+            add_title_bank_items(g, k, chunk)
+
+        remainder = len(items) - assigned_items
+        extra_templates = max(0, full_groups - len(keys))
+        msg = (
+            f"✅ {assigned_items} متن در {assigned_groups} قالب تقسیم شد.\n"
+            f"📦 سهم هر قالب: {per_template} متن\n"
+        )
+        if assigned_groups:
+            msg += f"📁 قالب‌های تکمیل‌شده: ۱ تا {assigned_groups}\n"
+        if extra_templates:
+            msg += f"⚠️ {extra_templates * per_template} متن اضافه بود چون این بخش فقط {len(keys)} قالب دارد.\n"
+        if remainder:
+            msg += f"⚠️ {remainder} متن ناقص باقی ماند و برای حفظ قانون {per_template}تایی ذخیره نشد.\n"
+        if assigned_items == 0:
+            msg = (
+                f"⚠️ هنوز یک بسته کامل {per_template}تایی برای هیچ قالبی وجود ندارد.\n"
+                f"📦 متن‌های دریافت‌شده: {len(items)}\n"
+                f"برای هر قالب باید حداقل {per_template} متن بفرستی."
+            )
+        context.user_data.clear()
+        await update.message.reply_text(
+            msg,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 بازگشت به بخش", callback_data=f"section:{g}")]])
         )
         return
 
