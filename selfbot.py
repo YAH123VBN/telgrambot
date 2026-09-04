@@ -788,9 +788,6 @@ def build_post_result(url, template_key, topic_name=None, title_override=None):
 # ═══════════════════════════════════════════════════
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
-    if text.startswith("دستیار") or re.match(r"^\s*/dastyar(?:@\w+)?(?:\s|$)", text, re.I):
-        await assistant_handle_command(update, context, text)
-        return
     if not can_use_bot(uid):
         await update.message.reply_text("⛔ دسترسی نداری!")
         return
