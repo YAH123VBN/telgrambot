@@ -1,0 +1,6 @@
+kurigram
+tgcrypto
+yt-dlp
+opencv-python-headless
+numpy
+pytesseract
